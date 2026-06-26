@@ -1,0 +1,35 @@
+# Firas AI — Fly.io config (FREE tier, with a PERSISTENT volume so accounts and
+# chat history survive restarts). Run `fly launch --no-deploy` once to pick a
+# unique app name + region, then `fly deploy`. See DEPLOY.md for the full steps.
+
+app = "firas-ai"            # CHANGE to a globally-unique name (fly will prompt)
+primary_region = "fra"      # pick the region nearest you (e.g. fra, cdg, ams, mad)
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret env. SECRETS (OLLAMA_API_KEY, SESSION_SECRET, FIREBASE_PROJECT_ID)
+# are set separately with `fly secrets set ...` — NEVER put them here.
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+  DATA_DIR = "/data"
+  SECURE_COOKIES = "1"
+  OLLAMA_HOST = "https://ollama.com"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1   # keep exactly ONE warm — the JSON DB is single-instance
+
+# Persistent disk for /data (db.json + session secret). Create it once with:
+#   fly volumes create firas_data --size 1 --region <your-region>
+[[mounts]]
+  source = "firas_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Secrets — never commit real keys
+.env
+.env.local
+.env.*.local
+
+# Firebase web config: a null stub is committed (no secrets — the web apiKey is
+# public). Replace its contents with your project config to enable Google login.
+
+# Database — holds user records + session secret
+/data/
+
+# Vercel
+.vercel/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/

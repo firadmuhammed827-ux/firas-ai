@@ -1,0 +1,30 @@
+# Firas AI — Render Blueprint (FREE web service).
+# Simplest free deploy: push to GitHub, then New + → "Blueprint" → pick the repo.
+#
+# ⚠️ Render's FREE plan has NO persistent disk, so data/db.json (user accounts +
+#    chat history) RESETS whenever the instance restarts or spins down after
+#    inactivity. SESSION_SECRET below is generated once and kept stable, so at
+#    least nobody is force-logged-out on a redeploy — but accounts/history are
+#    NOT durable on free. For durable data for free, use Fly.io (see fly.toml /
+#    DEPLOY.md), or add a paid Render disk and set DATA_DIR to its mount path.
+services:
+  - type: web
+    name: firas-ai
+    runtime: node
+    plan: free
+    buildCommand: ""
+    startCommand: node server.mjs
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SECURE_COOKIES
+        value: "1"
+      - key: OLLAMA_HOST
+        value: https://ollama.com
+      - key: SESSION_SECRET
+        generateValue: true        # stable random value, kept across deploys
+      - key: OLLAMA_API_KEY
+        sync: false                # set this in the Render dashboard (Secret)
+      - key: FIREBASE_PROJECT_ID
+        value: firas-ai

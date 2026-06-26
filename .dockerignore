@@ -1,0 +1,9 @@
+# Never bake the local database / secret / junk into the image — the host volume owns /data.
+data/
+.git/
+.env
+*.log
+node_modules/
+.claude/
+.DS_Store
+npm-debug.log*
