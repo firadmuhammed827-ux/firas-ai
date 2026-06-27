@@ -61,6 +61,11 @@ const ANTHROPIC_MAX_TOK  = Math.max(1024, parseInt(process.env.ANTHROPIC_MAX_TOK
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 const OPENROUTER_MODEL   = process.env.OPENROUTER_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
 const OPENROUTER_URL     = "https://openrouter.ai/api/v1/chat/completions";
+// Gemini image model (Google AI Studio "Nano Banana") — actual Gemini-level quality.
+// If GEMINI_API_KEY is set, /api/image uses it FIRST, falling back to keyless
+// pollinations on error/quota. Free key, NO credit card (aistudio.google.com).
+const GEMINI_API_KEY     = process.env.GEMINI_API_KEY || "";
+const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
 
 // Tier -> Ollama model + generation params (env-overridable).
 // num_predict = MAX output tokens. Generous so long outputs (a full single-file
@@ -1120,6 +1125,33 @@ async function handleImageQuota(req, res) {
   return sendJson(res, 200, { ok: true, limit: IMAGE_DAILY_LIMIT, used, remaining: IMAGE_DAILY_LIMIT - used });
 }
 
+// Generate an image with Gemini (Google AI Studio). Returns {buf, mime} or null to
+// fall back to pollinations. Free key, ~500 images/day, no card.
+async function generateImageGemini(prompt) {
+  if (!GEMINI_API_KEY) return null;
+  const ac = new AbortController();
+  const to = setTimeout(() => ac.abort(), 45_000);
+  try {
+    const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + GEMINI_IMAGE_MODEL + ":generateContent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+      body: JSON.stringify({ contents: [{ parts: [{ text: String(prompt || "").slice(0, 4000) }] }] }),
+      signal: ac.signal,
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const parts = j && j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts;
+    if (Array.isArray(parts)) {
+      for (const p of parts) {
+        const inl = p.inlineData || p.inline_data;
+        if (inl && inl.data) return { buf: Buffer.from(inl.data, "base64"), mime: inl.mimeType || inl.mime_type || "image/png" };
+      }
+    }
+    return null;
+  } catch (_) { return null; }
+  finally { clearTimeout(to); }
+}
+
 async function handleImage(req, res) {
   // Require a session so the proxy can't be used as an anonymous, unmetered relay
   // to pollinations. Authed reloads of saved images still carry the cookie, so
@@ -1140,8 +1172,19 @@ async function handleImage(req, res) {
   const w = Math.min(1280, Math.max(256, parseInt(u.searchParams.get("w"), 10) || 1024));
   const h = Math.min(1280, Math.max(256, parseInt(u.searchParams.get("h"), 10) || 1024));
   const seed = (u.searchParams.get("seed") || "").replace(/[^0-9]/g, "").slice(0, 12);
+  // 1) Gemini (free key) → actual Gemini-image quality. Falls back to pollinations.
+  try {
+    const gem = await generateImageGemini(prompt);
+    if (gem && gem.buf && gem.buf.length) {
+      if (isNew) { user.imgCids.push(cid); persist(); }
+      res.writeHead(200, { "Content-Type": gem.mime, "Cache-Control": "public, max-age=86400" });
+      return res.end(gem.buf);
+    }
+  } catch (_) { /* fall through to pollinations */ }
+  // 2) Keyless pollinations (flux) with LLM prompt-enhance + private/no-feed for the
+  // best free quality (enhance≈doubles detail; private+nofeed keep it off the feed).
   const src = "https://image.pollinations.ai/prompt/" + encodeURIComponent(prompt) +
-    "?width=" + w + "&height=" + h + "&nologo=true&model=flux" + (seed ? "&seed=" + seed : "");
+    "?width=" + w + "&height=" + h + "&nologo=true&enhance=true&private=true&nofeed=true&model=flux" + (seed ? "&seed=" + seed : "");
   try {
     const r = await fetch(src, { headers: { "User-Agent": SEARCH_UA, "Accept": "image/*" } });
     if (!r.ok) { res.writeHead(502); return res.end("image generation failed"); }

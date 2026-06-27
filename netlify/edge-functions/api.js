@@ -26,6 +26,10 @@ const ANTHROPIC_MAX_TOK  = Math.max(1024, parseInt(env("ANTHROPIC_MAX_TOKENS") |
 const OPENROUTER_API_KEY = env("OPENROUTER_API_KEY") || "";
 const OPENROUTER_MODEL   = env("OPENROUTER_MODEL") || "nvidia/nemotron-3-ultra-550b-a55b:free";
 const OPENROUTER_URL     = "https://openrouter.ai/api/v1/chat/completions";
+// Gemini image model (Google AI Studio "Nano Banana"). If GEMINI_API_KEY is set,
+// /api/image uses it FIRST, falling back to keyless pollinations. Free key, no card.
+const GEMINI_API_KEY     = env("GEMINI_API_KEY") || "";
+const GEMINI_IMAGE_MODEL = env("GEMINI_IMAGE_MODEL") || "gemini-2.5-flash-image";
 const UPSTREAM_TIMEOUT_MS = Number(env("REQUEST_TIMEOUT_MS")) || 300000;
 
 const COOKIE_NAME = "firas_session";
@@ -494,6 +498,33 @@ async function imgDayNode(userId) { return (await dbGet(`imgQuota/${userId}/${se
 // scheme as images so concurrent distinct charges never clobber each other.
 async function maxDayNode(userId) { return (await dbGet(`maxQuota/${userId}/${serverDay()}`)) || {}; }
 
+// Generate an image with Gemini (Google AI Studio). Returns {bytes, mime} or null to
+// fall back to pollinations. Free key, ~500/day, no card.
+async function generateImageGemini(prompt) {
+  if (!GEMINI_API_KEY) return null;
+  const ac = new AbortController();
+  const to = setTimeout(() => ac.abort(), 45000);
+  try {
+    const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + GEMINI_IMAGE_MODEL + ":generateContent", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+      body: JSON.stringify({ contents: [{ parts: [{ text: String(prompt || "").slice(0, 4000) }] }] }),
+      signal: ac.signal,
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const parts = j && j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts;
+    if (Array.isArray(parts)) {
+      for (const p of parts) {
+        const inl = p.inlineData || p.inline_data;
+        if (inl && inl.data) { try { return { bytes: b64ToBytes(inl.data), mime: inl.mimeType || inl.mime_type || "image/png" }; } catch (_) {} }
+      }
+    }
+    return null;
+  } catch (_) { return null; }
+  finally { clearTimeout(to); }
+}
+
 /* ============================================================================
    ROUTER
    ============================================================================ */
@@ -687,7 +718,15 @@ export default async (request, context) => {
       const w = Math.min(1280, Math.max(256, parseInt(url.searchParams.get("w"), 10) || 1024));
       const h = Math.min(1280, Math.max(256, parseInt(url.searchParams.get("h"), 10) || 1024));
       const seed = (url.searchParams.get("seed") || "").replace(/[^0-9]/g, "").slice(0, 12);
-      const src = "https://image.pollinations.ai/prompt/" + encodeURIComponent(prompt) + "?width=" + w + "&height=" + h + "&nologo=true&model=flux" + (seed ? "&seed=" + seed : "");
+      // Gemini (free key) first → actual Gemini-image quality; else keyless pollinations.
+      try {
+        const gem = await generateImageGemini(prompt);
+        if (gem && gem.bytes && gem.bytes.length) {
+          if (isNew) { try { await dbPut(`imgQuota/${user.id}/${day}/${cid}`, true); } catch (_) {} }
+          return new Response(gem.bytes, { headers: { "Content-Type": gem.mime, "Cache-Control": "public, max-age=86400" } });
+        }
+      } catch (_) { /* fall through to pollinations */ }
+      const src = "https://image.pollinations.ai/prompt/" + encodeURIComponent(prompt) + "?width=" + w + "&height=" + h + "&nologo=true&enhance=true&private=true&nofeed=true&model=flux" + (seed ? "&seed=" + seed : "");
       try {
         const r = await fetch(src, { headers: { "User-Agent": SEARCH_UA, "Accept": "image/*" } });
         if (!r.ok) return new Response("image generation failed", { status: 502 });

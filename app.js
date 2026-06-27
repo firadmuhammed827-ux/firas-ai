@@ -4704,7 +4704,7 @@ async function streamAnswer(aiMsg, aiNode, chat) {
       let prompt = String(imgUser.content).slice(0, 300);
       try {
         const enhanced = await callAgentText([
-          { role: "system", content: "Turn the user's request into ONE concise, vivid ENGLISH image-generation prompt (subject + style + lighting + key details). Output ONLY the prompt text — no quotes, no explanation, no preamble." },
+          { role: "system", content: "Turn the user's request into ONE rich, vivid ENGLISH image-generation prompt that yields a HIGH-QUALITY, professional result. Keep the user's subject and intent, then add concrete visual detail: composition, setting, lighting, mood, colors, and camera/style cues. If the user wants a realistic photo, add photoreal cues (e.g. \"photorealistic, ultra-detailed, sharp focus, natural lighting, shot on 50mm, high resolution\"); if they want art/illustration/3D/anime, add the matching style cues instead. Do NOT contradict the requested style. Output ONLY the final prompt text — no quotes, no explanation, no preamble." },
           { role: "user", content: imgUser.content },
         ], "pro", signal);
         if (enhanced && enhanced.trim()) prompt = enhanced.trim().replace(/^["'`\s]+|["'`\s]+$/g, "").replace(/\s+/g, " ").slice(0, 400);
