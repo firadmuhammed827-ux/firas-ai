@@ -1866,6 +1866,31 @@ h1, h2, h3 { margin: 0; font-family: var(--font-serif); font-weight: var(--weigh
   display: block; object-fit: cover;
 }
 .msg-user__bubble:has(.msg-user__images:only-child) { /* image-only bubble stays tidy */ }
+.msg-user__images img { cursor: zoom-in; transition: filter var(--dur-fast) var(--ease-out); }
+.msg-user__images img:hover { filter: brightness(1.06); }
+
+/* Full-screen attached-image viewer */
+.img-lightbox {
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: rgba(0, 0, 0, 0.82);
+  cursor: zoom-out; animation: lbFade 0.15s ease;
+}
+@supports (backdrop-filter: blur(2px)) { .img-lightbox { backdrop-filter: blur(2px); } }
+.img-lightbox__img {
+  max-inline-size: 94vw; max-block-size: 92vh;
+  border-radius: 8px; background: #fff; cursor: default;
+  box-shadow: 0 16px 56px rgba(0, 0, 0, 0.55);
+}
+.img-lightbox__close {
+  position: absolute; top: 16px; inset-inline-end: 20px;
+  inline-size: 40px; block-size: 40px; border-radius: 50%; border: 0;
+  background: rgba(255, 255, 255, 0.16); color: #fff;
+  font-size: 26px; line-height: 1; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.img-lightbox__close:hover { background: rgba(255, 255, 255, 0.3); }
+@keyframes lbFade { from { opacity: 0; } to { opacity: 1; } }
 
 /* ----------------------------------------------------------------------------
    13. KaTeX math — keep LTR for formulas even inside RTL bubbles

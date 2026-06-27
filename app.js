@@ -2185,6 +2185,45 @@ function renderThread(chat, forceScroll = false) {
   if (forceScroll || autoScroll) requestAnimationFrame(scrollToBottom);
 }
 
+/** Build a usable data-URL from a RAW base64 image (no prefix), sniffing the mime
+    from the magic bytes; passes a data-URL through unchanged. */
+function rawB64ToDataUrl(b64) {
+  if (typeof b64 !== "string" || !b64) return null;
+  if (b64.startsWith("data:")) return b64;
+  let mime = "image/jpeg";
+  if (b64.startsWith("iVBOR")) mime = "image/png";
+  else if (b64.startsWith("R0lGOD")) mime = "image/gif";
+  else if (b64.startsWith("UklGR")) mime = "image/webp";
+  else if (b64.startsWith("/9j/")) mime = "image/jpeg";
+  return "data:" + mime + ";base64," + b64;
+}
+
+/** Full-screen image viewer for an attached image. Close via the ✕, the backdrop,
+    or Esc. One instance at a time. */
+function openImageLightbox(src) {
+  if (!src) return;
+  const prev = document.getElementById("imgLightbox");
+  if (prev) prev.remove();
+  const ov = document.createElement("div");
+  ov.id = "imgLightbox";
+  ov.className = "img-lightbox";
+  const img = document.createElement("img");
+  img.className = "img-lightbox__img";
+  img.src = src; img.alt = "";
+  const btn = document.createElement("button");
+  btn.className = "img-lightbox__close";
+  btn.type = "button";
+  btn.setAttribute("aria-label", state.lang === "ar" ? "إغلاق" : "Close");
+  btn.innerHTML = "&times;";
+  ov.appendChild(img); ov.appendChild(btn);
+  const close = () => { ov.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  ov.addEventListener("click", (e) => { if (e.target === ov || e.target === btn) close(); });
+  btn.addEventListener("click", close);
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(ov);
+}
+
 function userTurnEl(msg) {
   const turn = document.createElement("div");
   turn.className = "turn msg-user";
@@ -2200,11 +2239,17 @@ function userTurnEl(msg) {
     const gallery = document.createElement("div");
     gallery.className = "msg-user__images";
     gallery.dir = "ltr";
-    thumbs.forEach((src) => {
+    thumbs.forEach((src, i) => {
       const img = document.createElement("img");
       img.src = src;
       img.alt = "";
       img.loading = "lazy";
+      img.style.cursor = "zoom-in";
+      img.title = state.lang === "ar" ? "اضغط للتكبير" : "Click to enlarge";
+      // Open the full-res image (kept in-session) when available; else the thumb.
+      const fullRaw = Array.isArray(msg.images) ? msg.images[i] : null;
+      const big = fullRaw ? (rawB64ToDataUrl(fullRaw) || src) : src;
+      img.addEventListener("click", () => openImageLightbox(big));
       gallery.appendChild(img);
     });
     bubble.appendChild(gallery);
@@ -4674,6 +4719,15 @@ async function streamAnswer(aiMsg, aiNode, chat) {
           requestMessages = [requestMessages[0], { role: "system", content: note }, ...requestMessages.slice(1)];
         }
       }
+    }
+    // VISION turn → tell the model to answer thoroughly and, when asked to extract/
+    // read text, transcribe ALL of it COMPLETELY and verbatim (not just a summary).
+    const lastUForVision = [...convo].reverse().find((m) => m.role === "user");
+    if (lastUForVision && Array.isArray(lastUForVision.images) && lastUForVision.images.length && !codeReq) {
+      const vSys = replyLang === "ar"
+        ? "أنت ترى الصورة/الصور المرفقة. إن طُلب منك استخراج أو نسخ أو قراءة النص من الصورة، فاكتب كل النص كاملًا وحرفيًا — كل عنوان وفقرة وسطر ونقطة بالترتيب — دون تلخيص أو اختصار أو توقّف مبكّر، إلى آخر كلمة في الصفحة. وإلا فأجب عن السؤال المتعلّق بالصورة بدقّة وتفصيل."
+        : "You can see the attached image(s). If asked to extract, transcribe, or read text from the image, output ALL the text COMPLETELY and verbatim — every heading, paragraph, line and bullet, in order — never summarize, abbreviate, or stop early; continue to the very last word on the page. Otherwise answer the question about the image accurately and in detail.";
+      requestMessages = [requestMessages[0], { role: "system", content: vSys }, ...requestMessages.slice(1)];
     }
     const rtModel = MODELS[requestTier] || tier;
 
