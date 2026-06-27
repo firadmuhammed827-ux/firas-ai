@@ -2951,9 +2951,35 @@ function ensureFileTitle(meta, mdNodeOrText) {
 /** The themed document CSS. `scope` = "" → global (full HTML doc for Word);
     "#firasExportRoot" → scoped to the attached element (PDF), so it never bleeds
     into the app. Dark themes (th.bg/th.ink/th.border) produce dark PAGES. */
+// Professional document fonts loaded from Google Fonts and AWAITED before an export
+// captures the DOM (otherwise the PDF falls back to plain system fonts). EN = Lora
+// (serif body) + Inter (sans headings); AR = Tajawal (body) + Cairo (headings).
+let _exportFontsLink = false;
+async function ensureExportFonts(isAr) {
+  try {
+    if (!_exportFontsLink) {
+      const l = document.createElement("link");
+      l.rel = "stylesheet";
+      l.href = "https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&family=Inter:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Tajawal:wght@400;500;700;800&display=swap";
+      document.head.appendChild(l);
+      _exportFontsLink = true;
+    }
+    if (document.fonts && document.fonts.load) {
+      const want = isAr
+        ? ["400 1em Tajawal", "500 1em Tajawal", "700 1em Tajawal", "800 1em Tajawal", "600 1em Cairo", "700 1em Cairo", "800 1em Cairo"]
+        : ["400 1em Lora", "500 1em Lora", "700 1em Lora", "italic 400 1em Lora", "500 1em Inter", "600 1em Inter", "700 1em Inter"];
+      // Never hang the export on a slow/blocked CDN → cap the wait, then fall back.
+      await Promise.race([
+        Promise.all(want.map((f) => document.fonts.load(f).catch(() => {}))).then(() => document.fonts.ready),
+        new Promise((r) => setTimeout(r, 2500)),
+      ]);
+    }
+  } catch (_) { /* offline / blocked → system fonts */ }
+}
+
 function exportCss(th, isAr, scope) {
-  const fontStack = isAr ? '"Segoe UI","Tahoma","Arial",sans-serif' : 'Georgia,"Times New Roman","Cambria",serif';
-  const sansStack = isAr ? '"Segoe UI","Tahoma","Arial",sans-serif' : '"Helvetica Neue","Segoe UI",Arial,sans-serif';
+  const fontStack = isAr ? '"Tajawal","Segoe UI","Tahoma",Arial,sans-serif' : '"Lora",Georgia,"Times New Roman","Cambria",serif';
+  const sansStack = isAr ? '"Cairo","Tajawal","Segoe UI",Arial,sans-serif' : '"Inter","Helvetica Neue","Segoe UI",Arial,sans-serif';
   const bg = th.bg || "FFFFFF", ink = th.ink || "1A1A18", line = th.border || "D8D6CB";
   const root = scope || "body";
   const dp = scope ? scope + " " : "";
@@ -2972,7 +2998,7 @@ function exportCss(th, isAr, scope) {
     rdp + ".cover__rule{margin-left:auto}" +
     dp + ".cover__date{font-family:" + sansStack + ";font-size:11pt;color:rgba(255,255,255,.72)}" +
     dp + ".doc{padding-top:2mm}" +
-    dp + "h1," + dp + "h2," + dp + "h3," + dp + "h4{color:#" + ink + ";line-height:1.25;font-weight:700;page-break-after:avoid;break-after:avoid}" +
+    dp + "h1," + dp + "h2," + dp + "h3," + dp + "h4{font-family:" + sansStack + ";color:#" + ink + ";line-height:1.25;font-weight:700;letter-spacing:-.01em;page-break-after:avoid;break-after:avoid}" +
     dp + "h1{font-size:22pt;margin:.2em 0 .5em;padding-bottom:.22em;border-bottom:2.5px solid #" + th.accent + "}" +
     dp + "h2{font-size:16.5pt;margin:1.2em 0 .45em;color:#" + th.accent + "}" +
     dp + "h3{font-size:13.5pt;margin:1em 0 .4em}" +
@@ -3137,7 +3163,8 @@ async function exportPdf(turn, lang, msg) {
     // Build + attach the themed root in-place (styles + KaTeX apply correctly).
     root = buildExportRoot(mdNode, lang, meta);
     document.body.appendChild(root);
-    await new Promise((r) => setTimeout(r, 90)); // let layout + fonts + KaTeX settle
+    await ensureExportFonts(lang === "ar");       // professional fonts ready before capture
+    await new Promise((r) => setTimeout(r, 90)); // let layout + KaTeX settle
 
     const pdf = new JsPDF({ unit: "mm", format: "a4", orientation: "portrait", compress: true });
     const pageW = 210, pageH = 297, mL = 14, mT = 15, mB = 16;
@@ -3971,12 +3998,16 @@ function agentBrand(lang) {
     "anything, run code, click 'print', or 'save as PDF'. Output ONLY the document's own content as Markdown.";
 }
 function plannerSys(fmt, lang) {
-  return "You are a senior document architect. The user wants a " + fmt.toUpperCase() + " file. Decide the file's " +
-    "identity and structure — do NOT write the full content yet. Output FIRST this exact block (valid JSON):\n" +
-    "```firas-file\n{\"filename\":\"short meaningful name in the user's language, no extension\",\"title\":\"the title\"," +
-    "\"subtitle\":\"one short line or empty\",\"theme\":\"<one theme key>\"}\n```\nthen a blank line, then a concise " +
-    "OUTLINE (bullet list) of the sections/items the document must contain, in order. If the user asked for N items " +
-    "(e.g. N equations), plan exactly N." + AGENT_THEMES + " No preamble, no commentary." + agentBrand(lang);
+  return "You are a senior document architect and designer. The user wants a " + fmt.toUpperCase() + " file. " +
+    "THINK like a professional first: who is the reader, what is the document's purpose, and what structure + visual " +
+    "hierarchy would make it look polished, credible and authoritative. Then decide the file's identity and a COMPLETE, " +
+    "well-ordered structure — do NOT write the full content yet. Output FIRST this exact block (valid JSON):\n" +
+    "```firas-file\n{\"filename\":\"short meaningful name in the user's language, no extension\",\"title\":\"a strong, " +
+    "specific title\",\"subtitle\":\"one concise line or empty\",\"theme\":\"<one theme key>\"}\n```\nthen a blank line, " +
+    "then a concise OUTLINE (bullet list) of the sections/items in order — a professional flow (clear opening/intro, " +
+    "logically grouped main sections with descriptive headings, supporting tables/lists where useful, and a closing/" +
+    "summary). If the user asked for N items (e.g. N equations), plan exactly N. Pick a theme whose tone fits the topic." +
+    AGENT_THEMES + " No preamble, no commentary." + agentBrand(lang);
 }
 function authorSys(fmt, lang) {
   const mathRule = " Write every equation/formula as $$ … $$ (display) or $ … $ (inline) Markdown so it renders — " +
@@ -3987,10 +4018,13 @@ function authorSys(fmt, lang) {
   if (fmt === "pptx") return "You are an expert presentation author. Following the plan, output slides: a single " +
     "'# Deck Title' then each slide as '## Slide Title' + 3-6 short bullets. Only the content, no metadata block, no " +
     "preamble." + mathRule + agentBrand(lang);
-  return "You are an elite document author. Following the plan, write the FULL, accurate, thorough CONTENT body as " +
-    "clean Markdown — a strong '# Title', logical ##/### sections, well-written paragraphs, lists, Markdown tables, and " +
-    "blockquotes for key points. Be complete and correct: if N items were requested, produce exactly N, each explained." +
-    mathRule + " Output ONLY the document body — no metadata block, no preamble, no commentary." + agentBrand(lang);
+  return "You are an elite document author and editor producing a POLISHED, PROFESSIONAL document. Following the plan, " +
+    "write the FULL, accurate, thorough CONTENT as clean Markdown: a strong '# Title', a brief engaging introduction, " +
+    "logical ##/### sections with descriptive headings, clear well-written paragraphs (real prose, not terse fragments), " +
+    "bulleted/numbered lists where they aid clarity, GitHub-style Markdown tables for any structured data, and blockquotes " +
+    "for key takeaways. Keep a confident professional tone with smooth flow between sections, and finish with a concise " +
+    "conclusion/summary when appropriate. Be complete and correct: if N items were requested, produce exactly N, each " +
+    "properly explained." + mathRule + " Output ONLY the document body — no metadata block, no preamble, no commentary." + agentBrand(lang);
 }
 function finisherSys(fmt, lang) {
   return "You are the finishing editor. You are given a metadata block and a draft. Output the FINAL " + fmt.toUpperCase() +
