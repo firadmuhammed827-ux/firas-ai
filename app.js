@@ -965,6 +965,7 @@ function irabSystemPrompt() {
     "- لكلِّ كلمة بيّن: نوعَها (اسم/فعل/حرف)، وموقعَها الإعرابي (مبتدأ، خبر، فاعل، نائب فاعل، مفعول به، مضاف إليه، حال، تمييز، اسم/خبر للناسخ، مجرور بحرف الجر، بدل، نعت، معطوف، توكيد...)، وحالتَها (مرفوع/منصوب/مجرور/مجزوم، أو مبني)، وعلامةَ الإعراب (الضمة/الفتحة/الكسرة/السكون، أو العلامات الفرعية: الواو والألف والياء والنون وثبوت النون أو حذفها، ومنع الصرف)، وسببَ ذلك.",
     "- أعرِبِ الجُملَ وأشباهَ الجُمل وبيّن محلَّها من الإعراب (في محل رفع/نصب/جر، أو لا محلَّ لها) مع التعليل.",
     "- إن كان النص آيةً من القرآن الكريم فالتزم أقصى الدقّة، واتّبع ما قرّره أئمّةُ النحو في كتب إعراب القرآن، وأشِرْ إلى القراءات إن أثّرت في الإعراب، وإلى تعدّد الأوجه الإعرابية إن وُجِد.",
+    "- إن وُجدت في السياق نتائجُ بحثٍ أو مراجعُ لإعراب هذه الجملة فاستند إليها بعد التحقّق من صحّتها، ونظّمها وقدّمها للمستخدم بوضوح؛ وإن لم تتوفّر مراجع (أو لم يُجدِ البحث) فأعرِبِ الجملة بنفسك وَفق المنهج أعلاه.",
     "- كن صحيحًا مضبوطًا تمامًا ولا تُقدّم إعرابًا خاطئًا؛ وإن لم تتيقّن من وجهٍ فبيّن ذلك بوضوح بدلًا من التخمين.",
     "- رتّب الإجابة بوضوح: اكتب الكلمة ثم إعرابَها سطرًا سطرًا، واضبط الكلماتِ بالشكل (التشكيل)، بعربيةٍ فصحى سليمة.",
   ].join("\n");
@@ -4735,17 +4736,27 @@ async function streamAnswer(aiMsg, aiNode, chat) {
       // Skip web search on VISION turns (the server routes those to the vision
       // model and ignores the tier override; injected text would only pollute it).
       const lastHasImages = lastUserMsg && Array.isArray(lastUserMsg.images) && lastUserMsg.images.length > 0;
-      if (lastUserMsg && !lastHasImages && (state.webSearch || needsWebSearch(lastUserMsg.content))) {
-        const sn = liveNode(); const smd = sn && sn.querySelector(".msg-ai__body .md");
-        if (smd) smd.innerHTML = buildFileLoadingHtml(replyLang === "ar" ? "يبحث في الإنترنت…" : "Searching the web…");
-        const results = await fetchWebSearch(lastUserMsg.content);
+      const isIrab = !!(lastUserMsg && !lastHasImages && detectIrabRequest(lastUserMsg.content));
+      // I'RAB ALWAYS searches the web for the parse FIRST (then the AI organizes it);
+      // a normal turn searches only on the toggle or detected web intent.
+      const doSearch = lastUserMsg && !lastHasImages && (isIrab || state.webSearch || needsWebSearch(lastUserMsg.content));
+      if (doSearch) {
+        // The "searching…" badge shows only when the web-search feature is ON — so an
+        // i'rab search with the toggle OFF runs SILENTLY (no badge), per the rule.
+        const showIndicator = isIrab ? !!state.webSearch : true;
+        if (showIndicator) {
+          const sn = liveNode(); const smd = sn && sn.querySelector(".msg-ai__body .md");
+          if (smd) smd.innerHTML = buildFileLoadingHtml(replyLang === "ar" ? "يبحث في الإنترنت…" : "Searching the web…");
+        }
+        const query = isIrab ? ("إعراب " + lastUserMsg.content) : lastUserMsg.content;
+        const results = await fetchWebSearch(query);
         const ctx = formatSearchContext(results, replyLang);
         if (ctx) {
           requestMessages = [requestMessages[0], { role: "system", content: ctx }, ...requestMessages.slice(1)];
           // gpt-oss (pro) uses live web results far better than the coder model (ultra),
-          // so answer search-augmented turns with it regardless of the selected tier.
-          requestTier = "pro";
-        } else if (state.webSearch) {
+          // so answer search-augmented turns with it. (I'rab tier is set below.)
+          if (!isIrab) requestTier = "pro";
+        } else if (state.webSearch && !isIrab) {
           // Toggle is explicitly ON but the search came back empty — tell the model
           // to say so, so the user isn't misled into thinking it's web-grounded.
           const note = replyLang === "ar"
