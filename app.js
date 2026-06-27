@@ -1139,6 +1139,7 @@ function buildCodeCard(meta, lang, opts) {
       '<div class="code-card__actions"></div>' +
     "</div>" +
     '<div class="code-card__body"><pre><code class="code-card__code"></code></pre></div>' +
+    '<div class="code-card__foot" hidden></div>' +
     '<div class="code-card__preview" hidden></div>';
   card.querySelector(".code-card__name").textContent = filename;
   card.querySelector(".code-card__lang").textContent = label;
@@ -1188,6 +1189,20 @@ function wireCodeActions(card, meta, lang) {
   const k = mkBtn(ICONS.continue, ar ? "كمّل" : "Continue", "js-continue");
   k.addEventListener("click", () => continueCode(card));
   actions.appendChild(k);
+  // Also surface Continue as a prominent bar UNDER the code — that's where the eye
+  // lands when the code cuts off, and the header buttons may be scrolled away.
+  const foot = card.querySelector(".code-card__foot");
+  if (foot) {
+    foot.hidden = false;
+    foot.innerHTML = "";
+    const hint = document.createElement("span");
+    hint.className = "code-card__foot-hint";
+    hint.textContent = ar ? "الكود غير مكتمل؟" : "Code cut off?";
+    const kf = mkBtn(ICONS.continue, ar ? "كمّل الكود" : "Continue code", "js-continue code-card__contbtn");
+    kf.addEventListener("click", () => continueCode(card));
+    foot.appendChild(hint);
+    foot.appendChild(kf);
+  }
 }
 /** Toggle a sandboxed live preview of HTML code (scripts run, but isolated from
     our origin — no allow-same-origin, so it can't read our cookies/storage). */
