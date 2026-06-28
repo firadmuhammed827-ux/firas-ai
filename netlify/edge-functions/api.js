@@ -772,7 +772,7 @@ export default async (request, context) => {
       if (!messages.length) return json({ error: 'body must include a non-empty "messages" array' }, 400);
       // Inject persistent user memory so every reply is personalized.
       const memBlk = memoryBlock(user);
-      if (memBlk) { const si = messages.findIndex((m) => m && m.role === "system"); const mm = { role: "system", content: memBlk }; if (si >= 0) messages.splice(si + 1, 0, mm); else messages.unshift(mm); }
+      if (memBlk) { const si = messages.findIndex((m) => m && m.role === "system"); if (si >= 0) messages[si] = { role: "system", content: String(messages[si].content || "") + "\n\n" + memBlk }; else messages.unshift({ role: "system", content: memBlk }); }
       const vision = hasImages(messages);
       const think = vision ? false : !!payload.think;
       // Capped tier (Max): enforce the per-user daily limit and charge one slot per

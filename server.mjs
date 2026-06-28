@@ -1821,9 +1821,11 @@ async function handleChat(req, res) {
   // (right after the first system message) so every reply is personalized.
   const memBlk = memoryBlock(user);
   if (memBlk) {
+    // Merge memory INTO the first system message (not a separate one) — some models
+    // (e.g. the coder model on Ultra) ignore a second system message.
     const sysIdx = messages.findIndex((m) => m && m.role === "system");
-    const memMsg = { role: "system", content: memBlk };
-    if (sysIdx >= 0) messages.splice(sysIdx + 1, 0, memMsg); else messages.unshift(memMsg);
+    if (sysIdx >= 0) messages[sysIdx] = { role: "system", content: String(messages[sysIdx].content || "") + "\n\n" + memBlk };
+    else messages.unshift({ role: "system", content: memBlk });
   }
 
   // VISION DETECTION: any message carrying a non-empty images array routes to
