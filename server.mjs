@@ -100,7 +100,7 @@ const CF_API_TOKEN   = process.env.CF_API_TOKEN || "";
 // (handled in generateImageCloudflare). Higher volume: @cf/black-forest-labs/flux-1-schnell
 // (~130/day, weak text). Premium-but-pricey: @cf/leonardo/lucid-origin (~4/day).
 const CF_IMAGE_MODEL = process.env.CF_IMAGE_MODEL || "@cf/black-forest-labs/flux-2-klein-9b";
-const CF_IMAGE_STEPS = Math.min(8, Math.max(1, parseInt(process.env.CF_IMAGE_STEPS || "6", 10) || 6));
+const CF_IMAGE_STEPS = Math.min(20, Math.max(1, parseInt(process.env.CF_IMAGE_STEPS || "10", 10) || 10)); // flux-2 (no per-step cost) uses this; flux-schnell clamped to 8 in the request
 
 // Tier -> Ollama model + generation params (env-overridable).
 // num_predict = MAX output tokens. Generous so long outputs (a full single-file
@@ -1304,7 +1304,7 @@ async function cfTryAccount(acct, prompt, w, h) {
       r = await fetch(url, { method: "POST", headers: { "Authorization": "Bearer " + acct.token }, body: fd, signal: ac.signal });
     } else {
       const body = { prompt: text };
-      if (/flux-1|schnell/i.test(CF_IMAGE_MODEL)) body.steps = CF_IMAGE_STEPS;
+      if (/flux-1|schnell/i.test(CF_IMAGE_MODEL)) body.steps = Math.min(8, CF_IMAGE_STEPS); // flux-schnell max 8
       r = await fetch(url, { method: "POST", headers: { "Authorization": "Bearer " + acct.token, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ac.signal });
     }
     if (!r.ok) {

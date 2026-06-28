@@ -58,7 +58,7 @@ const CF_API_TOKEN   = env("CF_API_TOKEN") || "";
 // volume: @cf/black-forest-labs/flux-1-schnell (~130/day). NOTE: flux-2-dev is too slow
 // for the edge's response window — keep a fast model (klein/schnell/leonardo) here.
 const CF_IMAGE_MODEL = env("CF_IMAGE_MODEL") || "@cf/black-forest-labs/flux-2-klein-9b";
-const CF_IMAGE_STEPS = Math.min(8, Math.max(1, parseInt(env("CF_IMAGE_STEPS") || "6", 10) || 6));
+const CF_IMAGE_STEPS = Math.min(20, Math.max(1, parseInt(env("CF_IMAGE_STEPS") || "10", 10) || 10)); // flux-2 uses this; flux-schnell clamped to 8 in the request
 // Pool of CF accounts → multiplies the free 10k-neuron/day quota: primary CF_ACCOUNT_ID/
 // CF_API_TOKEN + any pairs in CF_ACCOUNTS ("id:token,id:token"). (Pooling to bypass a free
 // tier may breach Cloudflare's ToS — operator's choice.)
@@ -613,7 +613,7 @@ async function cfTryAccount(acct, prompt, w, h) {
       r = await fetch(url, { method: "POST", headers: { "Authorization": "Bearer " + acct.token }, body: fd, signal: ac.signal });
     } else {
       const body = { prompt: text };
-      if (/flux-1|schnell/i.test(CF_IMAGE_MODEL)) body.steps = CF_IMAGE_STEPS;
+      if (/flux-1|schnell/i.test(CF_IMAGE_MODEL)) body.steps = Math.min(8, CF_IMAGE_STEPS); // flux-schnell max 8
       r = await fetch(url, { method: "POST", headers: { "Authorization": "Bearer " + acct.token, "content-type": "application/json" }, body: JSON.stringify(body), signal: ac.signal });
     }
     if (!r.ok) {
