@@ -5203,6 +5203,64 @@ async function runAssistant(chat, tier, replyLang) {
 
   beginStreaming(chat.id);
   await streamAnswer(aiMsg, aiNode, chat);
+  learnMemory(chat); // learn durable facts about the user from this exchange (fire-and-forget)
+}
+
+/** After a turn, extract durable facts about the user from the last exchange so
+    Firas remembers them in future chats. Fire-and-forget; the server does the
+    extraction + per-user storage and gates on auth. */
+function learnMemory(chat) {
+  try {
+    const msgs = (chat && chat.messages) || [];
+    let aiText = "", userText = "";
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (!aiText && msgs[i].role === "assistant") aiText = String(msgs[i].content || "");
+      else if (!userText && msgs[i].role === "user") { userText = String(msgs[i].content || ""); break; }
+    }
+    if (!userText.trim()) return;
+    fetch("/api/memory/learn", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user: userText.slice(0, 4000), assistant: aiText.slice(0, 2000) }),
+    }).catch(() => {});
+  } catch (_) {}
+}
+
+/** Modal showing what Firas has learned about the user (view + delete + clear). */
+async function openMemoryViewer() {
+  const ar = state.lang === "ar";
+  let facts = [];
+  try { const d = await apiJson("/api/memory"); facts = (d && d.memory) || []; } catch (_) { facts = []; }
+  const ov = document.createElement("div");
+  ov.className = "mem-overlay";
+  const close = () => { ov.classList.remove("is-open"); setTimeout(() => ov.remove(), 200); };
+  const body = facts.length
+    ? '<ul class="mem-list">' + facts.map((_, i) =>
+        '<li class="mem-item"><span></span><button class="mem-del" data-i="' + i + '" aria-label="' + (ar ? "حذف" : "delete") + '">&times;</button></li>').join("") + '</ul>'
+    : '<div class="mem-empty">' + (ar ? "ما حفظت معلومات عنك بعد — كل ما نتحدّث، أتعلّم وأتذكّر أكثر." : "Nothing saved about you yet — I learn and remember more as we chat.") + '</div>';
+  ov.innerHTML =
+    '<div class="mem-card" role="dialog" aria-modal="true">' +
+      '<div class="mem-head"><div style="flex:1">' +
+        '<h3>' + (ar ? "ما يتذكّره فراس عنك" : "What Firas remembers about you") + '</h3>' +
+        '<p>' + (ar ? "أستخدمها لتخصيص ردودي. خاصة بك وحدك." : "Used to personalize my replies. Private to you.") + '</p></div>' +
+        '<button class="mem-x" aria-label="' + (ar ? "إغلاق" : "close") + '"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>' +
+      '</div>' + body +
+      '<div class="mem-foot"><small>' + facts.length + (ar ? " معلومة" : (facts.length === 1 ? " item" : " items")) + '</small>' +
+        (facts.length ? '<button class="mem-clear">' + (ar ? "مسح الكل" : "Clear all") + '</button>' : '') +
+      '</div></div>';
+  ov.querySelectorAll(".mem-item span").forEach((s, i) => { s.textContent = facts[i]; }); // XSS-safe
+  document.body.appendChild(ov);
+  setTimeout(() => ov.classList.add("is-open"), 20); // setTimeout (not rAF) so it shows even if the tab is backgrounded
+  ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
+  ov.querySelector(".mem-x").addEventListener("click", close);
+  const clearBtn = ov.querySelector(".mem-clear");
+  if (clearBtn) clearBtn.addEventListener("click", async () => {
+    try { await api("/api/memory", { method: "DELETE" }); } catch (_) {}
+    close();
+  });
+  ov.querySelectorAll(".mem-del").forEach((b) => b.addEventListener("click", async () => {
+    try { await api("/api/memory?i=" + b.getAttribute("data-i"), { method: "DELETE" }); } catch (_) {}
+    close(); openMemoryViewer();
+  }));
 }
 
 /**
@@ -5615,6 +5673,7 @@ function cacheEls() {
   els.accountName = $("#accountName");
   els.accountAvatar = $("#accountAvatar");
   els.logoutBtn = $("#logoutBtn");
+  els.memoryBtn = $("#memoryBtn");
 }
 
 function wireEvents() {
@@ -5651,6 +5710,7 @@ function wireEvents() {
 
   // Logout
   els.logoutBtn.addEventListener("click", logout);
+  if (els.memoryBtn) els.memoryBtn.addEventListener("click", openMemoryViewer);
 
   // Search
   els.searchInput.addEventListener("input", (e) => { state.search = e.target.value; renderHistory(); });

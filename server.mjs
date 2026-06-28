@@ -1674,6 +1674,92 @@ async function streamFallback(res, messages, tier, think, signal) {
   }
 }
 
+/* ===========================================================================
+   PERSISTENT USER MEMORY — the assistant learns durable facts about each user
+   from their conversations and recalls them in future chats (private, per-user,
+   server-side). Extraction runs via the keyless pollinations engine.
+   =========================================================================== */
+const MEMORY_MAX = 60;
+function userMemory(user) { if (!Array.isArray(user.memory)) user.memory = []; return user.memory; }
+function memoryBlock(user) {
+  const m = userMemory(user);
+  if (!m.length) return "";
+  return "PERSISTENT USER MEMORY — facts you have learned about THIS specific user across past conversations:\n" +
+    m.map((f) => "- " + f).join("\n") +
+    "\nUse these naturally to personalize your replies (their name, language, preferences, ongoing work). " +
+    "Do NOT recite this list or announce 'I remember'; just use it. If the user states something that contradicts a fact, trust the newest statement.";
+}
+// Non-streaming completion via the keyless pollinations engine. Returns text or "".
+async function llmComplete(messages, opts) {
+  opts = opts || {};
+  try {
+    const r = await fetch(FALLBACK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: FALLBACK_MODEL, messages, stream: false, max_tokens: opts.maxTokens || 400 }),
+      signal: opts.signal,
+    });
+    if (!r.ok) return "";
+    const j = await r.json().catch(() => null);
+    const c = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+    return typeof c === "string" ? c : "";
+  } catch (_) { return ""; }
+}
+// Pull durable USER facts from one exchange and merge into the user's memory.
+async function handleMemoryLearn(req, res) {
+  const user = currentUser(req);
+  if (!user) return sendJson(res, 401, { error: "authentication required" });
+  if (rateLimited("mem:" + user.id, 60, 60_000)) return sendJson(res, 429, { error: "rate limited" });
+  let payload; try { payload = JSON.parse((await readBody(req, 200_000)) || "{}"); } catch { return sendJson(res, 400, { error: "invalid JSON" }); }
+  const userText = String(payload.user || "").slice(0, 4000).trim();
+  const aiText = String(payload.assistant || "").slice(0, 2000).trim();
+  if (!userText) return sendJson(res, 200, { ok: true, added: 0 });
+  const existing = userMemory(user);
+  const sys =
+    "You maintain a long-term memory of facts about a USER for an assistant. From the exchange, extract any NEW, DURABLE facts " +
+    "about the USER worth remembering across sessions: their name, location/country, job or role, the language they use, stable " +
+    "preferences, ongoing projects or goals, interests, and important personal details they reveal. " +
+    "Return ONLY a compact JSON array of short strings (each <= 12 words), facts about the USER only — never about the assistant, " +
+    "never general knowledge, never one-off task instructions. No duplicates of already-known facts. If nothing durable, return []. " +
+    "Already known: " + (existing.length ? JSON.stringify(existing.slice(-40)) : "[]");
+  const u = "USER: " + userText + (aiText ? "\nASSISTANT: " + aiText : "") + "\n\nJSON array of NEW durable user facts:";
+  const msgs = [{ role: "system", content: sys }, { role: "user", content: u }];
+  let facts = [];
+  for (let attempt = 0; attempt < 2 && !facts.length; attempt++) { // pollinations can return an empty body — retry once
+    const out = await llmComplete(msgs, { maxTokens: 300 });
+    try { const m = out.match(/\[[\s\S]*\]/); if (m) facts = JSON.parse(m[0]); } catch (_) {}
+  }
+  if (!Array.isArray(facts)) facts = [];
+  let added = 0;
+  const seen = new Set(existing.map((f) => String(f).toLowerCase().trim()));
+  for (let f of facts) {
+    f = String(f || "").trim();
+    if (!f || f.length > 140) continue;
+    const key = f.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key); existing.push(f); added++;
+  }
+  if (added) { while (existing.length > MEMORY_MAX) existing.shift(); persist(); }
+  return sendJson(res, 200, { ok: true, added, total: existing.length });
+}
+function handleMemoryGet(req, res) {
+  const user = currentUser(req);
+  if (!user) return sendJson(res, 401, { error: "authentication required" });
+  return sendJson(res, 200, { memory: userMemory(user) });
+}
+async function handleMemoryClear(req, res) {
+  const user = currentUser(req);
+  if (!user) return sendJson(res, 401, { error: "authentication required" });
+  // DELETE /api/memory clears all; DELETE /api/memory?i=N removes one by index.
+  const u = new URL(req.url, "http://localhost");
+  const idx = u.searchParams.get("i");
+  const mem = userMemory(user);
+  if (idx != null && idx !== "") { const n = parseInt(idx, 10); if (n >= 0 && n < mem.length) mem.splice(n, 1); }
+  else user.memory = [];
+  persist();
+  return sendJson(res, 200, { ok: true, memory: userMemory(user) });
+}
+
 async function handleChat(req, res) {
   // AUTH REQUIRED.
   const user = currentUser(req);
@@ -1706,6 +1792,15 @@ async function handleChat(req, res) {
       return sendJson(res, 429, { error: "daily Max limit reached", limit: MAX_DAILY_LIMIT, used: user.maxCids.length, remaining: 0 });
     }
     if (isNew) { user.maxCids.push(cid || ("r" + Date.now())); persist(); }
+  }
+
+  // PERSISTENT MEMORY: inject what we know about this user as a system message
+  // (right after the first system message) so every reply is personalized.
+  const memBlk = memoryBlock(user);
+  if (memBlk) {
+    const sysIdx = messages.findIndex((m) => m && m.role === "system");
+    const memMsg = { role: "system", content: memBlk };
+    if (sysIdx >= 0) messages.splice(sysIdx + 1, 0, memMsg); else messages.unshift(memMsg);
   }
 
   // VISION DETECTION: any message carrying a non-empty images array routes to
@@ -1829,6 +1924,10 @@ const server = http.createServer(async (req, res) => {
 
     // ---- Max tier daily quota (read-only pre-check) ----
     if (route === "/api/max/quota" && method === "POST") return await handleMaxQuota(req, res);
+
+    if (route === "/api/memory" && method === "GET") return handleMemoryGet(req, res);
+    if (route === "/api/memory" && method === "DELETE") return await handleMemoryClear(req, res);
+    if (route === "/api/memory/learn" && method === "POST") return await handleMemoryLearn(req, res);
 
     // ---- Build version (lets an open tab auto-reload when code changes) ----
     if (route === "/api/version" && method === "GET") return handleVersion(req, res);
