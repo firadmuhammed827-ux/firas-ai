@@ -4073,8 +4073,11 @@ function buildMessages(tier, conversation, replyLang) {
     "(Arabic→Arabic, English→English). Never switch languages on your own.";
   const mathRule =
     " For ANY mathematics, physics or scientific notation, ALWAYS format it as LaTeX: " +
-    "inline math as $...$ and display math as $$...$$ — never write raw unformatted " +
-    "formulas. Be accurate and verify before finalizing.";
+    "inline math as $...$ and display math as $$...$$ — never write raw unformatted formulas. " +
+    "MATH RIGOR: solve step by step, carry out every algebraic and arithmetic step exactly, and " +
+    "VERIFY the result before giving it (e.g. differentiate an antiderivative back to the integrand, " +
+    "substitute values to check an identity or equation, sanity-check limits and edge cases). Never " +
+    "state a numeric or symbolic result you have not checked.";
   const buildRule =
     " When asked to build a website, web app, page or UI, output ONE complete, polished, " +
     "PRODUCTION-QUALITY single HTML file (inline <style> and <script>). Make it LARGE and " +
@@ -4643,6 +4646,13 @@ async function runFileAgentPipeline(convo, fmt, lang, tierKey, signal, onStage) 
   tierKey = "pro";
   const lastUser = [...convo].reverse().find((m) => m.role === "user");
   const userText = lastUser ? lastUser.content : "";
+  // BIG-COUNT branch: a request for many items ("1000 integrals/problems/questions…")
+  // would truncate in a single author call → generate it in parallel BATCHES instead.
+  const cm = userText.match(/(\d[\d,]{1,5})\s*\+?\s*(?:integrals?|problems?|questions?|exercises?|equations?|items?|mcqs?|تكاملات?|مسائل|مسأل[ةه]?|أسئلة|سؤال|تمارين|تمرين|انتيكرل|انتقرل|معادلات?|معادلة)/i);
+  const bigCount = cm ? parseInt(cm[1].replace(/,/g, ""), 10) : 0;
+  if (bigCount >= 80 && fmt !== "xlsx" && fmt !== "csv" && fmt !== "pptx") {
+    return await runBatchedFileDoc(userText, bigCount, fmt, lang, tierKey, signal, onStage);
+  }
   // 1) Planner — identity + outline
   onStage("plan");
   const plan = await callAgentText([
@@ -4689,6 +4699,83 @@ async function runFileAgentPipeline(convo, fmt, lang, tierKey, signal, onStage) 
     }
   }
   return finalDoc;
+}
+
+/* ---- Large workbooks: generate N items in parallel BATCHES (no truncation) ---- */
+const DEFAULT_ITEM_CATEGORIES = [
+  "basic algebraic integrals", "rational functions & partial fractions", "trigonometric integrals",
+  "trigonometric substitution", "hyperbolic & inverse-hyperbolic functions", "inverse trigonometric integrals",
+  "exponential & logarithmic integrals", "integration by parts (incl. repeated)", "reduction-formula style integrals",
+  "clever u-substitutions", "definite integrals & their properties", "symmetry-based definite integrals",
+  "floor / greatest-integer & piecewise integrals", "absolute-value integrals", "mixed-technique tricky integrals",
+  "JEE-Advanced style integrals", "Olympiad-style integrals", "famous classical integrals",
+  "creative / original integrals", "mixed miscellaneous integrals",
+];
+function batchAuthorSys(lang) {
+  return "You are an elite mathematician and Olympiad problem curator building a printable workbook. " +
+    "Output ONLY a clean numbered Markdown list of the requested problems — each on its own line as `<n>. $<expression in LaTeX>$` " +
+    "(proper LaTeX: \\int, \\frac, \\sqrt, ^{}, _{}, bounds, etc.). Then a line containing EXACTLY `<!--ANSWERS-->`, and after " +
+    "it a compact numbered list of the FINAL ANSWERS ONLY (no steps), one per line `<n>. $<answer>$`. " +
+    "Every problem must be CORRECT and solvable by classical/elementary calculus (substitution, by-parts, partial fractions, " +
+    "trig/hyperbolic identities, symmetry) — NO contour integration, complex analysis, residues, Feynman's trick, " +
+    "Fourier/Laplace, or special functions. Be CREATIVE and VARIED — never repeat a pattern; mix difficulty (beginner→Olympiad). " +
+    "Verify each answer is right. No preamble, no commentary, no headings — nothing but the numbered problems and the answers." +
+    agentBrand(lang);
+}
+function batchUserMsg(userText, start, end, cat, lang) {
+  return "Workbook request (context): " + String(userText).slice(0, 600) +
+    "\n\nGenerate problems numbered EXACTLY " + start + " to " + end + " (" + (end - start + 1) + " problems), this batch " +
+    "FOCUSED on: " + cat + " (still mixing difficulty). Avoid textbook clones; include a few genuinely surprising ones. " +
+    "Output the numbered problems, then `<!--ANSWERS-->`, then the final answers.";
+}
+/** Run async workers over items with a concurrency cap; results returned in order. */
+async function mapWithLimit(items, limit, worker) {
+  const results = new Array(items.length);
+  let idx = 0;
+  async function run() { while (idx < items.length) { const i = idx++; results[i] = await worker(items[i], i); } }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+  return results;
+}
+async function runBatchedFileDoc(userText, count, fmt, lang, tierKey, signal, onStage) {
+  count = Math.min(Math.max(count, 1), 1000);          // hard cap
+  onStage("plan");
+  let metaBlock, title;
+  try {
+    const parsed = parseFileMeta(await callAgentText([
+      { role: "system", content: plannerSys(fmt, lang) },
+      { role: "user", content: userText },
+    ], tierKey, signal));
+    metaBlock = metaBlockString(parsed.meta);
+    title = parsed.meta.title || (lang === "ar" ? "كتاب التكاملات" : "Integration Workbook");
+  } catch (e) { if (signal.aborted) throw e; metaBlock = metaBlockString({ title: "Integration Workbook", theme: "navy" }); title = "Integration Workbook"; }
+  // Batch ranges (~50 each), each a rotating category for variety with no overlap.
+  const BATCH = 50;
+  const ranges = [];
+  for (let i = 0; i < Math.ceil(count / BATCH); i++) ranges.push({ start: i * BATCH + 1, end: Math.min((i + 1) * BATCH, count), cat: DEFAULT_ITEM_CATEGORIES[i % DEFAULT_ITEM_CATEGORIES.length] });
+  onStage("content");
+  const outs = await mapWithLimit(ranges, 5, async (r) => {
+    try {
+      return (await callAgentText([
+        { role: "system", content: batchAuthorSys(lang) },
+        { role: "user", content: batchUserMsg(userText, r.start, r.end, r.cat, lang) },
+      ], tierKey, signal)).trim();
+    } catch (e) { if (signal.aborted) throw e; return ""; }
+  });
+  onStage("assemble");
+  const probs = [], ans = [];
+  for (const out of outs) {
+    if (!out) continue;
+    const parts = out.split(/<!--\s*answers\s*-->/i);
+    const p = (parts[0] || "").replace(/^#+\s.*$/gm, "").trim();   // strip any stray headings
+    if (p) probs.push(p);
+    if (parts[1] && parts[1].trim()) ans.push(parts[1].trim());
+  }
+  const intro = lang === "ar"
+    ? "مجموعة منسّقة من التكاملات بمستويات متدرّجة — من المبتدئ حتى الأولمبياد. الإجابات النهائية في آخر الكتاب."
+    : "A curated collection of integrals spanning every level — from beginner to Olympiad. Final answers are at the end.";
+  const answersHead = lang === "ar" ? "مفتاح الإجابات" : "Answer Key";
+  return metaBlock + "\n\n# " + title + "\n\n" + intro + "\n\n" + probs.join("\n\n") +
+    (ans.length ? "\n\n# " + answersHead + "\n\n" + ans.join("\n\n") : "");
 }
 
 /* ============================================================================
@@ -4981,8 +5068,8 @@ async function streamAnswer(aiMsg, aiNode, chat) {
     // rigorously step-by-step, weigh edge-cases, and self-verify before answering.
     if (requestTier === "max") {
       const maxSys = replyLang === "ar"
-        ? "أنت في الوضع الأقوى «ماكس». فكّر بعمقٍ ودقّةٍ داخليًّا (فكّك المشكلة، وازِن الاحتمالات والمقايضات، وتحقّق من صحّة إجابتك قبل تقديمها)، لكن اجعل **طول الإجابة مناسبًا للسؤال**: كن مباشرًا وموجزًا في الأسئلة البسيطة، وأفِضْ في التحليل والتفصيل فقط عند الأسئلة المعقّدة التي تستحقّ ذلك. لا تُطِلْ بلا داعٍ ولا تحشُ الكلام — قدّم أعلى جودةٍ وأدقَّ إجابةٍ بأقصرِ طريقٍ ممكن."
-        : "You are in the most powerful mode, 'Max'. Think deeply and rigorously INTERNALLY (decompose, weigh possibilities and trade-offs, self-verify before answering), but match the RESPONSE LENGTH to the question: be direct and concise for simple questions, and go deep/detailed ONLY for genuinely complex ones that warrant it. Do not pad or over-write — deliver the highest-quality, most precise answer by the shortest path.";
+        ? "أنت في الوضع الأقوى «ماكس». فكّر بعمقٍ ودقّةٍ داخليًّا (فكّك المشكلة، وازِن الاحتمالات والمقايضات، وتحقّق من صحّة إجابتك قبل تقديمها)، لكن اجعل **طول الإجابة مناسبًا للسؤال**: كن مباشرًا وموجزًا في الأسئلة البسيطة، وأفِضْ في التحليل فقط عند الأسئلة المعقّدة. لا تُطِلْ بلا داعٍ. وأنت كذلك **رياضيٌّ عبقريٌّ بمستوى الأولمبياد**: في أي مسألة رياضيات أو فيزياء أو حساب، استدلّ بخطواتٍ صارمةٍ دقيقة، نفّذ كل عمليةٍ جبريةٍ وحسابيةٍ بدقّةٍ تامّة، و**تحقّق من الناتج قبل الإجابة** (مثلًا اشتقّ ناتج التكامل لترجع للدالة الأصلية، أو عوّض القيم في المعادلة، أو افحص النهايات/الوحدات/الحالات الحدّية) — لا تقدّم أبدًا إجابةً رقميةً أو رمزيةً غير مُتحقَّقٍ منها أو مُخمَّنة."
+        : "You are in the most powerful mode, 'Max'. Think deeply and rigorously INTERNALLY (decompose, weigh trade-offs, self-verify before answering), but match the RESPONSE LENGTH to the question: concise for simple ones, deep only for genuinely complex ones — never pad. You are also a BRILLIANT, Olympiad-caliber MATHEMATICIAN: for any mathematics, physics or quantitative problem, reason in careful rigorous steps, perform every algebraic and arithmetic manipulation EXACTLY, and VERIFY the result before answering (e.g. differentiate an integral back to the integrand, substitute values into the equation, sanity-check limits/units/edge cases) — never present an unverified or guessed numeric or symbolic answer. Deliver the highest-quality, most precise answer by the shortest sound path.";
       requestMessages = [requestMessages[0], { role: "system", content: maxSys }, ...requestMessages.slice(1)];
     }
     const rtModel = MODELS[requestTier] || tier;
