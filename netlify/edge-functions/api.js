@@ -29,7 +29,7 @@ const OPENROUTER_URL     = "https://openrouter.ai/api/v1/chat/completions";
 // Gemini TEXT for Max — Google AI Studio FREE tier (Flash family, ~1500 req/day, no card).
 // OpenAI-compatible endpoint → streams like OpenRouter. Tried FIRST in the Max chain.
 // GEMINI_TEXT_MODEL may be a comma-separated fallback list; first id that streams wins.
-const GEMINI_TEXT_MODELS = (env("GEMINI_TEXT_MODEL") || "gemini-flash-latest,gemini-3-flash,gemini-2.5-flash").split(",").map((s) => s.trim()).filter(Boolean);
+const GEMINI_TEXT_MODELS = (env("GEMINI_TEXT_MODEL") || "gemini-2.5-flash,gemini-flash-latest").split(",").map((s) => s.trim()).filter(Boolean);
 const GEMINI_OAI_URL     = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 // Gemini image model (Google AI Studio "Nano Banana"). If GEMINI_API_KEY is set,
 // /api/image uses it FIRST, falling back to keyless pollinations. Free key, no card.

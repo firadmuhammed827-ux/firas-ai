@@ -66,7 +66,7 @@ const OPENROUTER_URL     = "https://openrouter.ai/api/v1/chat/completions";
 // Gemini's OpenAI-compatible endpoint so it streams exactly like OpenRouter. Tried FIRST
 // in the Max chain. GEMINI_TEXT_MODEL may be a comma-separated fallback list of ids — the
 // adapter uses the first that actually streams (resilient to Google's model-id churn).
-const GEMINI_TEXT_MODELS = (process.env.GEMINI_TEXT_MODEL || "gemini-flash-latest,gemini-3-flash,gemini-2.5-flash").split(",").map((s) => s.trim()).filter(Boolean);
+const GEMINI_TEXT_MODELS = (process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash,gemini-flash-latest").split(",").map((s) => s.trim()).filter(Boolean);
 const GEMINI_OAI_URL     = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 // Gemini image model (Google AI Studio "Nano Banana") — actual Gemini-level quality.
 // If GEMINI_API_KEY is set, /api/image uses it FIRST, falling back to keyless
