@@ -4749,14 +4749,23 @@ async function runBatchedFileDoc(userText, count, fmt, lang, tierKey, signal, on
     metaBlock = metaBlockString(parsed.meta);
     title = parsed.meta.title || (lang === "ar" ? "كتاب التكاملات" : "Integration Workbook");
   } catch (e) { if (signal.aborted) throw e; metaBlock = metaBlockString({ title: "Integration Workbook", theme: "navy" }); title = "Integration Workbook"; }
-  // Batch ranges (~50 each), each a rotating category for variety with no overlap.
-  const BATCH = 50;
+  // Batch ranges (~35 each), each a rotating category for variety with no overlap.
+  // Smaller batches finish faster (~150s vs ~200s), so more complete inside the time budget.
+  const BATCH = 35;
   const ranges = [];
   for (let i = 0; i < Math.ceil(count / BATCH); i++) ranges.push({ start: i * BATCH + 1, end: Math.min((i + 1) * BATCH, count), cat: DEFAULT_ITEM_CATEGORIES[i % DEFAULT_ITEM_CATEGORIES.length] });
   onStage("content");
-  const PER_BATCH_MS = 120000;   // a single batch that hangs (slow Ollama) is given up on, not allowed to stall the whole run
-  // One batch with its own 120s cap that still forwards an overall Stop / 12-min timeout.
+  // gpt-oss is a slow reasoning model (~5s/problem → a 50-item batch ≈ 200s). Give each
+  // batch a generous cap (close to the server's own 5-min limit) so valid batches aren't
+  // cut short, and NEVER throw — a failed/aborted batch is simply skipped so whatever
+  // finished still assembles into a (possibly partial) workbook.
+  const PER_BATCH_MS = 240000;
+  const t0 = Date.now();
+  const SOFT_BUDGET_MS = 600000;   // ~10 min: stop launching new batches and assemble what
+                                   // finished, so a huge count returns a clean PARTIAL workbook
+                                   // BEFORE the hard 12-min stream timeout would discard it.
   const genBatch = async (r) => {
+    if (Date.now() - t0 > SOFT_BUDGET_MS || signal.aborted) return "";  // out of budget → skip
     const ac = new AbortController();
     const fwd = () => { try { ac.abort(); } catch (_) {} };
     if (signal.aborted) ac.abort(); else signal.addEventListener("abort", fwd, { once: true });
@@ -4766,9 +4775,8 @@ async function runBatchedFileDoc(userText, count, fmt, lang, tierKey, signal, on
         { role: "system", content: batchAuthorSys(lang) },
         { role: "user", content: batchUserMsg(userText, r.start, r.end, r.cat, lang) },
       ], tierKey, ac.signal)).trim();
-    } catch (e) {
-      if (signal.aborted) throw e;     // overall Stop / 12-min timeout → propagate
-      return "";                         // this batch errored or hit its 120s cap → skip it
+    } catch (_) {
+      return "";                         // errored / per-batch cap / overall stop → skip, keep what we have
     } finally { clearTimeout(to); try { signal.removeEventListener("abort", fwd); } catch (_) {} }
   };
   const progress = () => onStage((lang === "ar" ? "يكتب التكاملات… " : "Writing integrals… ") +
@@ -4858,10 +4866,11 @@ async function streamAnswer(aiMsg, aiNode, chat) {
   const controller = new AbortController();
   const { signal } = controller;
 
-  // Timeout guard — 12 min (each underlying /api/chat call is still bounded by the
+  // Timeout guard — 15 min (each underlying /api/chat call is still bounded by the
   // server's own 5-min limit; this larger budget lets MULTI-call flows like a batched
-  // 1000-item workbook finish instead of being cut off in the browser).
-  const timeoutId = setTimeout(() => { try { controller.abort("timeout"); } catch (_) {} }, 720000);
+  // workbook finish). It sits ABOVE the batch run's 10-min soft budget + one 4-min batch
+  // so the partial workbook always assembles and returns BEFORE this hard cut would fire.
+  const timeoutId = setTimeout(() => { try { controller.abort("timeout"); } catch (_) {} }, 900000);
 
   // Register this in-flight stream by chat id so Stop can target it precisely and
   // navigation can leave it running.
