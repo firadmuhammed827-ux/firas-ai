@@ -86,14 +86,13 @@ const MODELS = {
     key: "max",
     transport: "openai",
     label: { ar: "فِراس ماكس", en: "Firas Max" },
-    tagline: { ar: "الأقوى — أعلى ذكاء وتفكير (حد يومي)", en: "Strongest — top intelligence (daily limit)" },
+    tagline: { ar: "الأقوى — أعلى ذكاء وتفكير", en: "Strongest — top intelligence" },
     short: { ar: "ماكس", en: "Max" },
     reasoning_effort: "high",
     temperature: 0.7,
     max_tokens: 16384,
     showThinking: true,
-    premium: true,
-    capped: true,          // gated by a per-user daily cap (see /api/max/quota)
+    premium: true,         // free & unlimited for everyone (no daily cap)
     persona:
       "You are Firas Max, THE most powerful and intelligent Firas tier — a frontier-level " +
       "expert. Reason with exceptional depth and rigor, think step by step, and double-check " +
@@ -4354,7 +4353,7 @@ async function callAgentText(messages, tierKey, signal) {
   let response;
   if (CONFIG.BACKEND_URL) {
     response = await fetch(CONFIG.BACKEND_URL, { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages, tier: tierKey, think: false }), credentials: "same-origin", signal });
+      body: JSON.stringify({ messages, tier: tierKey, think: false, nomem: true }), credentials: "same-origin", signal });
   } else {
     response = await fetch(TRANSPORT_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: m.transport, messages, stream: true, reasoning_effort: m.reasoning_effort, temperature: m.temperature, max_tokens: m.max_tokens }), signal });
@@ -4380,7 +4379,7 @@ async function streamAgentText(messages, tierKey, signal, onDelta) {
   let response;
   if (CONFIG.BACKEND_URL) {
     response = await fetch(CONFIG.BACKEND_URL, { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages, tier: tierKey, think: false }), credentials: "same-origin", signal });
+      body: JSON.stringify({ messages, tier: tierKey, think: false, nomem: true }), credentials: "same-origin", signal });
   } else {
     response = await fetch(TRANSPORT_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: m.transport, messages, stream: true, reasoning_effort: m.reasoning_effort, temperature: m.temperature, max_tokens: m.max_tokens }), signal });
@@ -5190,21 +5189,8 @@ async function streamAnswer(aiMsg, aiNode, chat) {
     }
     const rtModel = MODELS[requestTier] || tier;
 
-    // Capped tier (Max): block before streaming if the daily cap is exhausted,
-    // else mint a request id so the server charges this send exactly once.
-    let maxCid = "", maxQuota = null;
-    if (requestTier === "max" && CONFIG.BACKEND_URL) {
-      maxQuota = await fetchMaxQuota();
-      if (maxQuota && maxQuota.ok === false) {
-        clearTimeout(timeoutId);
-        finalized = true;
-        aiMsg.content = maxLimitText(replyLang, maxQuota);
-        aiMsg.reasoning = "";
-        finalizeAi(aiMsg, chat);
-        return;
-      }
-      maxCid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ("m" + Date.now() + Math.floor(Math.random() * 1e6));
-    }
+    // Max is now FREE & UNLIMITED for everyone — no daily cap, no pre-check.
+    let maxCid = "";
 
     let response;
     if (CONFIG.BACKEND_URL) {

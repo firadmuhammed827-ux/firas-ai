@@ -97,7 +97,7 @@ const TIERS = {
   // Env-overridable so the model can be swapped without a redeploy if Ollama's
   // cloud catalog rotates. fallbackModel degrades to a known-good hosted model
   // (gpt-oss) before the last-resort pollinations fallback.
-  max:   { model: env("OLLAMA_MODEL_MAX") || "qwen3-coder:480b-cloud", temperature: 0.7, num_predict: 32768, fallbackModel: env("OLLAMA_MODEL_MAX_FALLBACK") || "gpt-oss:120b-cloud", capped: true },
+  max:   { model: env("OLLAMA_MODEL_MAX") || "qwen3-coder:480b-cloud", temperature: 0.7, num_predict: 32768, fallbackModel: env("OLLAMA_MODEL_MAX_FALLBACK") || "gpt-oss:120b-cloud", capped: false },
 };
 // Vision model. The edge ALWAYS talks to Ollama cloud, which does NOT host the
 // local-only qwen2.5vl — so use a CLOUD-hosted multimodal model. gemma3:27b-cloud
@@ -809,8 +809,10 @@ export default async (request, context) => {
       const messages = Array.isArray(payload.messages) ? payload.messages : [];
       const tier = TIERS[payload.tier] ? payload.tier : "pro";
       if (!messages.length) return json({ error: 'body must include a non-empty "messages" array' }, 400);
-      // Inject persistent user memory so every reply is personalized.
-      const memBlk = memoryBlock(user);
+      // Inject persistent user memory so every reply is personalized — but NOT for
+      // internal agent calls (nomem=true: file/PDF generation, prompt-enhance), so
+      // personal facts never leak into generated documents. Memory is for CHAT only.
+      const memBlk = payload.nomem ? "" : memoryBlock(user);
       if (memBlk) { const si = messages.findIndex((m) => m && m.role === "system"); if (si >= 0) messages[si] = { role: "system", content: String(messages[si].content || "") + "\n\n" + memBlk }; else messages.unshift({ role: "system", content: memBlk }); }
       const vision = hasImages(messages);
       const think = vision ? false : !!payload.think;
@@ -979,9 +981,8 @@ export default async (request, context) => {
     if (path === "/api/max/quota" && method === "POST") {
       const user = await currentUser(context);
       if (!user) return json({ ok: false, error: "auth required" }, 401);
-      const used = Object.keys(await maxDayNode(user.id)).length;
-      if (used >= MAX_DAILY_LIMIT) return json({ ok: false, limit: MAX_DAILY_LIMIT, used, remaining: 0 }, 429);
-      return json({ ok: true, limit: MAX_DAILY_LIMIT, used, remaining: MAX_DAILY_LIMIT - used });
+      // Max is FREE & UNLIMITED for everyone now.
+      return json({ ok: true, limit: 0, used: 0, remaining: -1 });
     }
 
     /* ---- image generation proxy (charge on success by cid) ---- */

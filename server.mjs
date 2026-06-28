@@ -131,7 +131,7 @@ const TIERS = {
   // Env-overridable so the model swaps without a redeploy if Ollama's cloud catalog
   // rotates. fallbackModel degrades to a known-good hosted model (gpt-oss) before the
   // last-resort pollinations fallback.
-  max:   { model: process.env.OLLAMA_MODEL_MAX || "qwen3-coder:480b-cloud", temperature: 0.7, num_predict: 32768, fallbackModel: process.env.OLLAMA_MODEL_MAX_FALLBACK || "gpt-oss:120b-cloud", capped: true },
+  max:   { model: process.env.OLLAMA_MODEL_MAX || "qwen3-coder:480b-cloud", temperature: 0.7, num_predict: 32768, fallbackModel: process.env.OLLAMA_MODEL_MAX_FALLBACK || "gpt-oss:120b-cloud", capped: false },
 };
 
 // Vision/multimodal model — used automatically when a request carries images.
@@ -1142,14 +1142,11 @@ function maxRollDay(user) {
   if (!Array.isArray(user.maxCids)) { user.maxCids = []; return true; }
   return false;
 }
-/* PRE-CHECK only (read-only): whether the user can still use the Max tier today. */
+/* Max is FREE & UNLIMITED for everyone now — always report capacity available. */
 async function handleMaxQuota(req, res) {
   const user = currentUser(req);
   if (!user) return sendJson(res, 401, { ok: false, error: "auth required" });
-  if (maxRollDay(user)) await persist();
-  const used = user.maxCids.length;
-  if (used >= MAX_DAILY_LIMIT) return sendJson(res, 429, { ok: false, limit: MAX_DAILY_LIMIT, used, remaining: 0 });
-  return sendJson(res, 200, { ok: true, limit: MAX_DAILY_LIMIT, used, remaining: MAX_DAILY_LIMIT - used });
+  return sendJson(res, 200, { ok: true, limit: 0, used: 0, remaining: -1 });
 }
 
 /* PRE-CHECK only (read-only): tells the client whether the user can still create
@@ -1813,11 +1810,21 @@ async function handleMemoryLearn(req, res) {
   if (!Array.isArray(facts)) facts = [];
   let added = 0;
   const seen = new Set(existing.map((f) => String(f).toLowerCase().trim()));
+  const labelOf = (s) => { const i = String(s).indexOf(":"); return i > 0 ? String(s).slice(0, i).trim().toLowerCase() : ""; };
   for (let f of facts) {
     f = String(f || "").trim();
     if (!f || f.length > 140) continue;
     const key = f.toLowerCase();
     if (seen.has(key)) continue;
+    // Correction-via-conversation: a new "Label: value" REPLACES any older fact with the
+    // same label (so a fresh "City: Baghdad" removes a stale "City: Aleppo") — the user
+    // can fix what Firas knows just by telling it, no manual editor needed.
+    const lab = labelOf(f);
+    if (lab) {
+      for (let i = existing.length - 1; i >= 0; i--) {
+        if (labelOf(existing[i]) === lab) { seen.delete(String(existing[i]).toLowerCase().trim()); existing.splice(i, 1); }
+      }
+    }
     seen.add(key); existing.push(f); added++;
   }
   if (added) { while (existing.length > MEMORY_MAX) existing.shift(); persist(); }
@@ -1877,7 +1884,9 @@ async function handleChat(req, res) {
 
   // PERSISTENT MEMORY: inject what we know about this user as a system message
   // (right after the first system message) so every reply is personalized.
-  const memBlk = memoryBlock(user);
+  // nomem=true on internal agent calls (file/PDF generation, prompt-enhance, batches)
+  // so personal facts NEVER leak into generated documents — memory is for CHAT only.
+  const memBlk = payload.nomem ? "" : memoryBlock(user);
   if (memBlk) {
     // Merge memory INTO the first system message (not a separate one) — some models
     // (e.g. the coder model on Ultra) ignore a second system message.
