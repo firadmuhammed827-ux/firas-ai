@@ -145,6 +145,7 @@ const STR = {
     logout: "تسجيل الخروج",
     thinkOn: "التفكير مُفعّل — دقة أعلى",
     thinkOff: "التفكير مُعطّل — استجابة أسرع",
+    thinkMaxBlocked: "عذراً، لا يمكنك استخدام ميزة التفكير في فِراس ماكس — قد يؤدي إلى كسر القيود.",
     webSearch: "بحث الويب",
     searchOn: "بحث الويب مُفعّل — يبحث في كل رسالة",
     searchOff: "بحث الويب تلقائي — يبحث عند الحاجة",
@@ -280,6 +281,7 @@ const STR = {
     logout: "Log out",
     thinkOn: "Thinking on — higher accuracy",
     thinkOff: "Thinking off — faster replies",
+    thinkMaxBlocked: "Sorry, Thinking can't be used in Firas Max — it may break the safety limits.",
     webSearch: "Web search",
     searchOn: "Web search on — searches every message",
     searchOff: "Web search auto — searches when needed",
@@ -1879,6 +1881,9 @@ function applyThink() {
   updateToolsBadge();
 }
 function setThink(on) {
+  // Thinking is disabled on Firas Max (it can be steered to break the safety limits).
+  // Keep the toggle present, but refuse to turn it ON and explain why.
+  if (on && state.tier === "max") { showToast(t().thinkMaxBlocked); return; }
   state.think = !!on;
   localStorage.setItem(LS_THINK, String(state.think));
   applyThink();
@@ -2458,14 +2463,6 @@ function aiActionsEl(msg, index) {
   regenBtn.addEventListener("click", () => regenerate(index, msg.tier));
 
   actions.append(copyBtn, regenBtn);
-
-  // Ultra upsell (don't show if already produced by Ultra)
-  if (msg.tier !== "ultra") {
-    const ultraBtn = mkAction(ICONS.star, t().regenUltra);
-    ultraBtn.classList.add("is-ultra");
-    ultraBtn.addEventListener("click", () => regenerate(index, "ultra"));
-    actions.appendChild(ultraBtn);
-  }
 
   // Per-message export dropdown intentionally removed — file downloads now use
   // the prominent file card shown only when the user actually requested a file.
@@ -4957,8 +4954,11 @@ async function streamAnswer(aiMsg, aiNode, chat) {
   activeStreams.set(chatId, { controller, timeoutId, aiMsg });
 
   // Snapshot the thinking pref for THIS reply. When off, no Thinking panel.
-  const wantThinking = state.think && tier.showThinking;
-  aiMsg.think = state.think;
+  // Max NEVER thinks (disabled there — see setThink), even if the pref was left on
+  // from another tier, so it can't be steered into breaking its limits.
+  const thinkAllowed = tier.key !== "max";
+  const wantThinking = state.think && tier.showThinking && thinkAllowed;
+  aiMsg.think = state.think && thinkAllowed;
 
   // Snapshot whether THIS reply should be masked as a streaming file (so the chat
   // shows a calm loader, not a wall of raw document text/code).
@@ -5018,6 +5018,11 @@ async function streamAnswer(aiMsg, aiNode, chat) {
         // "Creating your file…" loader while it streams.
         mdEl.innerHTML = fileFmt ? buildFileLoadingHtml() : renderMarkdown(answer);
         mdEl.classList.toggle("stream-caret", !fileFmt);
+        // Render math LIVE as it streams: KaTeX auto-render only converts CLOSED
+        // delimiter pairs (throwOnError:false ignores the still-incomplete trailing
+        // one), so each equation turns pretty the moment its closing $/$$ arrives —
+        // no waiting for the whole reply to finish.
+        if (!fileFmt) typesetMath(mdEl);
       }
       if (reasoning && wantThinking) {
         if (!thinkingNode || !thinkingNode.isConnected) {
