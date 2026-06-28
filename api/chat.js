@@ -28,7 +28,11 @@ import crypto from 'node:crypto';
 // (keyless dev / single-user deploys keep working).
 function authOk(req) {
   const secret = process.env.SESSION_SECRET;
-  if (!secret) return true; // not configured -> do not enforce
+  // FAIL CLOSED: if SESSION_SECRET is missing, refuse rather than serving an open,
+  // unauthenticated AI relay that any anonymous caller could use to burn credits.
+  // (This Vercel function is a legacy/divergent path — the real backends are
+  // server.mjs and the Netlify edge. Set SESSION_SECRET to use it.)
+  if (!secret) return false;
   const cookie = req.headers.cookie || '';
   const m = cookie.match(/(?:^|;\s*)firas_session=([^;]+)/);
   if (!m) return false;

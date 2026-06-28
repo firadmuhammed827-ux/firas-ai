@@ -283,6 +283,8 @@ async function verifyFirebaseIdToken(idToken) {
   if (payload.iss !== `https://securetoken.google.com/${FIREBASE_PROJECT_ID}`) return null;
   if (typeof payload.exp !== "number" || payload.exp <= now - skew) return null;
   if (typeof payload.iat !== "number" || payload.iat > now + skew) return null;
+  // Mirror server.mjs: reject a future-dated auth_time (clock-skew / tampering guard).
+  if (payload.auth_time != null && (typeof payload.auth_time !== "number" || payload.auth_time > now + skew)) return null;
   if (typeof payload.sub !== "string" || !payload.sub) return null;
   const email = String(payload.email || "").trim().toLowerCase();
   if (!email || !EMAIL_RE.test(email) || email.length > 200) return null;

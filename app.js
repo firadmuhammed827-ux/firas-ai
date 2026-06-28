@@ -96,12 +96,19 @@ const MODELS = {
     persona:
       "You are Firas Max, THE most powerful and intelligent Firas tier — a frontier-level " +
       "expert. Reason with exceptional depth and rigor, think step by step, and double-check " +
-      "yourself before answering. You are world-class at MATHEMATICS, PHYSICS, the SCIENCES, " +
-      "analysis and complex problem-solving: give fully correct, rigorous, step-by-step " +
-      "derivations and WRAP ALL math in LaTeX (inline $...$, display $$...$$). For PROGRAMMING, " +
-      "deliver clean, correct, complete, runnable code. Be the most thorough, insightful and " +
-      "reliable assistant possible — handle nuance, edge-cases and trade-offs explicitly. " +
-      "Always answer in the user's language.",
+      "yourself before answering. You are a world-class mathematician at the level of the " +
+      "International Mathematical Olympiad, Putnam, and JEE Advanced: treat every quantitative " +
+      "problem as a hard competition problem — identify the underlying structure, name and apply " +
+      "the relevant theorems/lemmas, and build a clean, fully rigorous derivation with every " +
+      "algebraic and arithmetic step exact (exact closed forms — fractions, radicals, π, e — " +
+      "never rounded decimals unless explicitly asked). INDEPENDENTLY VERIFY the result by a " +
+      "second method (differentiate back, substitute, check limits/units/special cases) before " +
+      "giving it, then present the final answer on its own line as **Answer:** $…$. WRAP ALL " +
+      "math in LaTeX (inline $...$, display $$...$$). For PROGRAMMING, deliver production-grade, " +
+      "idiomatic, fully runnable code — never stubs or placeholders — with type signatures where " +
+      "supported, input validation, correct edge-case/error handling, and the imports/setup " +
+      "needed to run it. Be the most thorough, insightful and reliable assistant possible — " +
+      "handle nuance, edge-cases and trade-offs explicitly. Always answer in the user's language.",
   },
 };
 
@@ -500,7 +507,7 @@ function detectLang(text) {
    Arabic + English. Checks pptx/xlsx/docx BEFORE the generic pdf fallback.
 ---------------------------------------------------------------------------- */
 const FILE_REQUEST_VERBS =
-  /\b(make|create|generate|build|produce|export|give\s*me|turn\s*(?:it|this)?\s*into|convert|save|download|send\s*me|write\s*me|prepare|put\s*(?:it|this)?\s*(?:in|into))\b|اصنع|إصنع|أنشئ|انشئ|سوّ?ي|اعمل|إعمل|اعملي|حوّ?ل|صدّ?ر|أعطني|اعطني|نزّ?ل|ابعت|إبعت|جهّ?ز|اكتب\s*لي|خرّ?ج/i;
+  /\b(make|create|generate|build|produce|export|give\s*me|turn\s*(?:it|this)?\s*into|convert|save|download|send\s*me|write(?:\s*me)?|draft|compose|author|prepare|put\s*(?:it|this)?\s*(?:in|into))\b|اصنع|إصنع|أنشئ|انشئ|سوّ?ي|اعمل|إعمل|اعملي|حوّ?ل|صدّ?ر|أعطني|اعطني|نزّ?ل|ابعت|إبعت|جهّ?ز|اكتب(?:\s*لي)?|خرّ?ج/i;
 
 /* ----------------------------------------------------------------------------
    CODE requests — "make me a single-file HTML site", "اكتب لي كود", "vanilla JS
@@ -525,6 +532,15 @@ const CODE_SPEC =
 // If the user explicitly names a DOCUMENT format, it's a document, not code.
 const CODE_DOC_OVERRIDE =
   /powerpoint|pptx|بوربوينت|باوربوينت|عرض\s*تقديمي|شرائح|سلايد|\bpdf\b|بي\s*دي\s*اف|excel|xlsx|اكسل|[إاأ]ي?كس[يى]?ل|\bword\b|docx|وورد|(?:ملف|مستند|بصيغة|صيغة)\s*ورد|\bcsv\b/i;
+// Generic PROGRAMMING nouns: with a build verb these mean CODE even without a named
+// language/web word ("write a function", "build me a calculator app", "make a game").
+const CODE_GENERIC =
+  /\bprogram\b|\bapp(?:lication)?\b|\bfunction\b|\bclass\b|\balgorithm\b|\bsnippet\b|\bgame\b|\bCLI\b|\bAPI\b|\bendpoint\b|\bregex\b|\bquery\b|\b(?:bash|shell)\b|تطبيق|دالة|خوارزمية|لعبة/i;
+// Document-deliverable nouns: a request for one of these (with a verb, no code/format
+// signal) defaults to a PDF — see detectFileRequest. Shared so detectCodeRequest can
+// bail on document-flavored phrasing.
+const DOC_NOUN =
+  /\b(report|summary|essay|book|ebook|guide|manual|paper|article|letter|cv|resume|story|outline|notes?|memo|thesis|brochure|worksheet)\b|تقرير|ملخّ?ص|مقال|كتاب|دليل|بحث|رسالة|سيرة\s*ذاتية|قصة|مذكرة|أطروحة|كرّاس|ورقة\s*عمل/i;
 
 /** Decide which language a code request targets (defaults to a single HTML file,
     the dominant case). */
@@ -556,7 +572,18 @@ function detectCodeRequest(text) {
   if (CODE_SPEC.test(s)) return codeSpecFromText(s);
   const hasVerb = CODE_BUILD_VERBS.test(s);
   if (!hasVerb) return null;
-  if (CODE_HARD.test(s) || CODE_SOFT.test(s)) return codeSpecFromText(s);
+  // Document-flavored request (report/book/essay…) → a DOCUMENT, UNLESS it explicitly
+  // names a code artifact/language. "report ABOUT programming" (برمجة as a TOPIC) is a
+  // PDF, not code — so the bail ignores topic-words (برمجة/برنامج) and only defers to
+  // code on an explicit language/كود/<!doctype/CODE_SPEC or a generic programming noun.
+  // A bare LANGUAGE NAME (python/html…) can be a TOPIC ("report about python"), so it does
+  // NOT count as a code artifact here — only an explicit "code/كود/script/<!doctype", a
+  // single-file spec, or a generic programming noun (function/app/game) overrides a document.
+  const codeArtifact = CODE_SPEC.test(s) || CODE_GENERIC.test(s) ||
+    /\bcode\b|كود|\bscript\b|سكر[يى]?بت|سكريبت|<!doctype/i.test(s);
+  if (DOC_NOUN.test(s) && !codeArtifact) return null;
+  // A build verb + a hard/soft/generic programming signal → real code request.
+  if (CODE_HARD.test(s) || CODE_SOFT.test(s) || CODE_GENERIC.test(s)) return codeSpecFromText(s);
   return null;
 }
 
@@ -649,8 +676,10 @@ function detectFileRequest(text) {
   for (const f of formats) {
     if (f.weak && f.weak.test(s) && (hasVerb || genericFileRe.test(s))) return f.fmt;
   }
-  // 3) A bare "make me a file/document" defaults to pdf.
-  if (genericFileRe.test(s) && hasVerb) return "pdf";
+  // 3) A request verb + a generic "file/document" word OR a document-deliverable noun
+  //    (report/book/summary/بحث/تقرير…) defaults to PDF — so most document requests
+  //    become a PDF unless another format was explicitly named above.
+  if (hasVerb && (genericFileRe.test(s) || DOC_NOUN.test(s))) return "pdf";
   return null;
 }
 
@@ -1965,6 +1994,15 @@ function setTier(key) {
       setTimeout(() => b.classList.remove("just-activated"), 700);
     }
   });
+  applyThinkAvailability();
+}
+/** Hide the Thinking toggle on tiers that don't support it (Mini), so the UI matches
+    behavior. It stays visible on Pro/Ultra (works) and Max (shown, but setThink refuses
+    it with a message). */
+function applyThinkAvailability() {
+  if (!els.thinkToggle) return;
+  const m = MODELS[state.tier];
+  els.thinkToggle.style.display = (m && m.showThinking) ? "" : "none";
 }
 
 /* ----------------------------------------------------------------------------
@@ -2851,7 +2889,9 @@ function shouldShowPlanStart(msg) {
   const chat = activeChat();
   const index = chat && Array.isArray(chat.messages) ? chat.messages.indexOf(msg) : -1;
   if (precededByApproval(chat, index)) return false; // this is the delivery reply
-  if (replyContainsDeliverable(msg, chat, index)) return false; // already delivered
+  // NOTE: we intentionally do NOT suppress on replyContainsDeliverable here. Before
+  // approval, a fenced block in a plan turn is a MISTAKE, not a real deliverable —
+  // still show Start so the user can approve and get a proper execution.
   return true;
 }
 
@@ -4110,7 +4150,10 @@ function buildMessages(tier, conversation, replyLang) {
     "MATH RIGOR: solve step by step, carry out every algebraic and arithmetic step exactly, and " +
     "VERIFY the result before giving it (e.g. differentiate an antiderivative back to the integrand, " +
     "substitute values to check an identity or equation, sanity-check limits and edge cases). Never " +
-    "state a numeric or symbolic result you have not checked.";
+    "state a numeric or symbolic result you have not checked. Give EXACT closed-form results " +
+    "(fractions, radicals, π, e, exact symbolic forms) — do NOT round to decimals unless the user " +
+    "explicitly asks. For proofs, write a clean structured argument (state what is given, what is to " +
+    "be shown, then the proof, ending with ∎), and present the final answer clearly on its own line.";
   const buildRule =
     " When asked to build a website, web app, page or UI, output ONE complete, polished, " +
     "PRODUCTION-QUALITY single HTML file (inline <style> and <script>). Make it LARGE and " +
@@ -4126,8 +4169,12 @@ function buildMessages(tier, conversation, replyLang) {
     "architecture, separation of concerns), handle edge cases and errors, and keep it " +
     "secure and performant. Prefer modern best practices and the most appropriate tools " +
     "for the task. Include exactly what's needed to run it (imports, setup, usage) and a " +
-    "concise rationale. ALWAYS strive to satisfy the user: anticipate their real needs, " +
-    "go the extra mile, polish the details, and deliver something you'd be proud to ship.";
+    "concise rationale. Use clear type signatures/annotations where the language supports them, " +
+    "validate inputs and fail loudly with meaningful errors (never swallow exceptions), avoid " +
+    "global mutable state, note time/space complexity for non-trivial algorithms, and follow the " +
+    "language's dominant style (PEP 8, idiomatic Go, modern ES). When it adds value, include a few " +
+    "illustrative usage examples or self-checks. ALWAYS strive to satisfy the user: anticipate their " +
+    "real needs, go the extra mile, polish the details, and deliver something you'd be proud to ship.";
   const accuracyRule =
     " ACCURACY — DO NOT FABRICATE: never invent facts, especially recent events, sports scores/results, " +
     "match line-ups, goalscorers, statistics, prices, or dates. If WEB SEARCH RESULTS are provided, rely on them " +
@@ -4135,9 +4182,13 @@ function buildMessages(tier, conversation, replyLang) {
     "a future/recent event), say clearly that you're not certain and offer to look it up — NEVER make up a specific " +
     "score, name, or detail. If a match/event did not happen or you can't confirm it, say so plainly. A correct " +
     "'I'm not sure' is far better than a confident wrong answer, and inventing a fake result is unacceptable.";
+  // In PLAN MODE, do NOT send buildRule/engineerRule — they push the model to emit the
+  // full code/deliverable, which contradicts planSystem and caused the plan itself to be
+  // written as a code block (then the Start pill was suppressed). planSystem alone governs.
+  const planning = state.mode === "plan";
   const system = {
     role: "system",
-    content: model.persona + identityRule + langRule + mathRule + accuracyRule + buildRule + engineerRule,
+    content: model.persona + identityRule + langRule + mathRule + accuracyRule + (planning ? "" : buildRule + engineerRule),
   };
 
   // PLAN MODE: a per-turn system message (inserted right after the persona).
@@ -4172,9 +4223,10 @@ function buildMessages(tier, conversation, replyLang) {
       "a clear, well-ORGANIZED plan — break the task into logical phases/sections and say " +
       "what each contains (for a website: the sections & layout, the design/style " +
       "direction, the key features, and the tech). Professional and concrete but skimmable " +
-      "(short numbered points). Do NOT write the actual code/content yet; invite the user " +
-      "to confirm or adjust. If nothing needed clarifying, skip step 1 and go straight to " +
-      "the plan.\n" +
+      "(short numbered points). Write the plan as plain numbered PROSE — NEVER wrap the plan " +
+      "itself in a code fence (no ``` blocks) and do NOT write any actual code/content yet; " +
+      "invite the user to confirm or adjust. If nothing needed clarifying, skip step 1 and go " +
+      "straight to the plan.\n" +
       "STEP 3 — EXECUTE: ONLY once the user approves (e.g. said ابدأ/go/نفّذ) do you " +
       "EXECUTE the FULL task to a high standard — for a website/app, deliver the COMPLETE, " +
       "large, polished single-file build per the build rule (many sections, do not cut it " +
@@ -5042,13 +5094,13 @@ async function streamAnswer(aiMsg, aiNode, chat) {
     const imgUser = planExecuting
       ? ([...convo].reverse().find((m) => m.role === "user" && detectImageRequest(m.content)) || [...convo].reverse().find((m) => m.role === "user"))
       : [...convo].reverse().find((m) => m.role === "user");
-    // A clearly-GRAPHIC noun (logo/poster/photo/wallpaper…) means an image even if
-    // the text also mentions html/web — so it wins over the code path.
-    const clearlyGraphic = imgUser && /صورة|صوره|شعار|لوغو|بوستر|خلفية|بورتريه|رسمة|رسمه|لوحة|\blogo\b|\bposter\b|\bwallpaper\b|\bportrait\b|\bavatar\b/i.test(imgUser.content);
     // A vision turn (the user attached images) must NOT be treated as image
     // generation — answer about the image instead.
     const imgHasAttachments = imgUser && Array.isArray(imgUser.images) && imgUser.images.length > 0;
-    if (imgUser && !imgHasAttachments && (state.mode !== "plan" || planExecuting) && !fileFmt && detectImageRequest(imgUser.content) && (clearlyGraphic || !codeReq)) {
+    // Only generate an image when the turn is NOT already routed to code or a file —
+    // so a stray "logo"/"image" mention inside a website/app/document request can no
+    // longer hijack it into image-gen (the "does the opposite of what I asked" bug).
+    if (imgUser && !imgHasAttachments && (state.mode !== "plan" || planExecuting) && !fileFmt && !codeReq && detectImageRequest(imgUser.content)) {
       // Pre-check the per-user daily cap (read-only; the slot is charged on the
       // server only when the image actually loads — see imageUrl's cid). An
       // explicit 429 blocks; other errors fail open (downstream auth still gates).
@@ -5146,9 +5198,10 @@ async function streamAnswer(aiMsg, aiNode, chat) {
         const ctx = isIrab ? formatIrabContext(results, replyLang) : formatSearchContext(results, replyLang);
         if (ctx) {
           requestMessages = [requestMessages[0], { role: "system", content: ctx }, ...requestMessages.slice(1)];
-          // gpt-oss (pro) uses live web results far better than the coder model (ultra),
-          // so answer search-augmented turns with it. (I'rab tier is set below.)
-          if (!isIrab) requestTier = "pro";
+          // gpt-oss (pro) uses live web results far better than the CODER model (ultra),
+          // so downgrade ultra→pro for search turns. Max (Gemini) handles web results
+          // excellently, so KEEP Max on its premium chain. (I'rab tier is set below.)
+          if (!isIrab && requestTier !== "max") requestTier = "pro";
         } else if (state.webSearch && !isIrab) {
           // Toggle is explicitly ON but the search came back empty — tell the model
           // to say so, so the user isn't misled into thinking it's web-grounded.
@@ -5183,8 +5236,8 @@ async function streamAnswer(aiMsg, aiNode, chat) {
     // rigorously step-by-step, weigh edge-cases, and self-verify before answering.
     if (requestTier === "max") {
       const maxSys = replyLang === "ar"
-        ? "أنت في الوضع الأقوى «ماكس». فكّر بعمقٍ ودقّةٍ داخليًّا (فكّك المشكلة، وازِن الاحتمالات والمقايضات، وتحقّق من صحّة إجابتك قبل تقديمها)، لكن اجعل **طول الإجابة مناسبًا للسؤال**: كن مباشرًا وموجزًا في الأسئلة البسيطة، وأفِضْ في التحليل فقط عند الأسئلة المعقّدة. لا تُطِلْ بلا داعٍ. وأنت كذلك **رياضيٌّ عبقريٌّ بمستوى الأولمبياد**: في أي مسألة رياضيات أو فيزياء أو حساب، استدلّ بخطواتٍ صارمةٍ دقيقة، نفّذ كل عمليةٍ جبريةٍ وحسابيةٍ بدقّةٍ تامّة، و**تحقّق من الناتج قبل الإجابة** (مثلًا اشتقّ ناتج التكامل لترجع للدالة الأصلية، أو عوّض القيم في المعادلة، أو افحص النهايات/الوحدات/الحالات الحدّية) — لا تقدّم أبدًا إجابةً رقميةً أو رمزيةً غير مُتحقَّقٍ منها أو مُخمَّنة."
-        : "You are in the most powerful mode, 'Max'. Think deeply and rigorously INTERNALLY (decompose, weigh trade-offs, self-verify before answering), but match the RESPONSE LENGTH to the question: concise for simple ones, deep only for genuinely complex ones — never pad. You are also a BRILLIANT, Olympiad-caliber MATHEMATICIAN: for any mathematics, physics or quantitative problem, reason in careful rigorous steps, perform every algebraic and arithmetic manipulation EXACTLY, and VERIFY the result before answering (e.g. differentiate an integral back to the integrand, substitute values into the equation, sanity-check limits/units/edge cases) — never present an unverified or guessed numeric or symbolic answer. Deliver the highest-quality, most precise answer by the shortest sound path.";
+        ? "أنت في الوضع الأقوى «ماكس». فكّر بعمقٍ ودقّةٍ داخليًّا (فكّك المشكلة، وازِن الاحتمالات والمقايضات، وتحقّق من صحّة إجابتك قبل تقديمها)، لكن اجعل **طول الإجابة مناسبًا للسؤال**: كن مباشرًا وموجزًا في الأسئلة البسيطة، وأفِضْ في التحليل فقط عند الأسئلة المعقّدة. لا تُطِلْ بلا داعٍ. وأنت كذلك **رياضيٌّ بمستوى الأولمبياد و Putnam و JEE Advanced**: عامل كل مسألة كمسألة مسابقات صعبة — سمِّ النظرية/الأسلوب المستخدم، استدلّ بخطواتٍ صارمةٍ دقيقة، نفّذ كل عمليةٍ جبريةٍ وحسابيةٍ بدقّةٍ تامّة، وأعطِ نواتج **مغلقة مضبوطة** (كسور، جذور، π، e — لا أعداد عشرية مقرّبة إلا عند الطلب)، ورتّب البراهين بوضوح (المعطى/المطلوب/البرهان ∎). و**تحقّق من الناتج بطريقةٍ ثانية قبل الإجابة** (اشتقّ ناتج التكامل للخلف، أو عوّض القيم، أو افحص النهايات/الوحدات/الحالات الحدّية)، ثم اختم بالناتج النهائي في سطر مستقل بصيغة **الإجابة:** $…$ — لا تقدّم أبدًا إجابةً غير مُتحقَّقٍ منها أو مُخمَّنة. وفي البرمجة سلّم كودًا احترافيًا كاملًا قابلًا للتشغيل بلا اختصار أو مواضع ناقصة، مع تواقيع الأنواع والتحقّق من المدخلات ومعالجة الحالات الحدّية والأخطاء وكل ما يلزم لتشغيله."
+        : "You are in the most powerful mode, 'Max'. Think deeply and rigorously INTERNALLY (decompose, weigh trade-offs, self-verify before answering), but match the RESPONSE LENGTH to the question: concise for simple ones, deep only for genuinely complex ones — never pad. You are a MATHEMATICIAN at IMO / Putnam / JEE-Advanced level: treat every quantitative problem as a hard competition problem — name the key theorem/technique, reason in careful rigorous steps, perform every algebraic and arithmetic manipulation EXACTLY, give EXACT closed-form results (fractions, radicals, π, e — not rounded decimals unless asked), and lay proofs out cleanly (Given / To show / Proof ∎). VERIFY the result by a SECOND method before answering (differentiate an integral back, substitute values, sanity-check limits/units/edge cases), then end with the final result on its own line as **Answer:** $…$ — never present an unverified or guessed answer. For PROGRAMMING, deliver production-grade, idiomatic, fully runnable code — no stubs, placeholders, or '…rest unchanged' — with type signatures, input validation, correct edge-case/error handling, and the imports/setup needed to run it. Deliver the highest-quality, most precise answer by the shortest sound path.";
       requestMessages = [requestMessages[0], { role: "system", content: maxSys }, ...requestMessages.slice(1)];
     }
     const rtModel = MODELS[requestTier] || tier;
@@ -5297,10 +5350,6 @@ async function streamAnswer(aiMsg, aiNode, chat) {
     }
     aiMsg.reasoning = reasoning;
     finalizeAi(aiMsg, chat);
-    // Show how many Max messages remain today (this send just used one).
-    if (requestTier === "max" && maxQuota && typeof maxQuota.remaining === "number") {
-      showToast(maxRemainingText(replyLang, { ...maxQuota, remaining: Math.max(0, maxQuota.remaining - 1) }));
-    }
   } catch (err) {
     clearTimeout(timeoutId);
     finalized = true;
