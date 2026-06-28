@@ -26,6 +26,11 @@ const ANTHROPIC_MAX_TOK  = Math.max(1024, parseInt(env("ANTHROPIC_MAX_TOKENS") |
 const OPENROUTER_API_KEY = env("OPENROUTER_API_KEY") || "";
 const OPENROUTER_MODEL   = env("OPENROUTER_MODEL") || "nvidia/nemotron-3-ultra-550b-a55b:free";
 const OPENROUTER_URL     = "https://openrouter.ai/api/v1/chat/completions";
+// Gemini TEXT for Max — Google AI Studio FREE tier (Flash family, ~1500 req/day, no card).
+// OpenAI-compatible endpoint → streams like OpenRouter. Tried FIRST in the Max chain.
+// GEMINI_TEXT_MODEL may be a comma-separated fallback list; first id that streams wins.
+const GEMINI_TEXT_MODELS = (env("GEMINI_TEXT_MODEL") || "gemini-flash-latest,gemini-3-flash,gemini-2.5-flash").split(",").map((s) => s.trim()).filter(Boolean);
+const GEMINI_OAI_URL     = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 // Gemini image model (Google AI Studio "Nano Banana"). If GEMINI_API_KEY is set,
 // /api/image uses it FIRST, falling back to keyless pollinations. Free key, no card.
 const GEMINI_API_KEY     = env("GEMINI_API_KEY") || "";
@@ -400,7 +405,8 @@ function chatStreamResponse(messages, tier, think, vision) {
         // Max tier → premium external engines FIRST: Claude Sonnet (paid), then
         // OpenRouter free (DeepSeek-R1) when Claude has no credit/fails.
         if (tier === "max" && !vision) {
-          served = await streamAnthropicInto(enc, messages, ac.signal);
+          served = await streamGeminiInto(enc, messages, ac.signal);
+          if (!served && !closed) served = await streamAnthropicInto(enc, messages, ac.signal);
           if (!served && !closed) served = await streamOpenRouterInto(enc, messages, ac.signal);
         }
         const okOllama = served ? true : await streamOllamaInto(enc, ollamaMessages, tier, think, ac.signal, modelOverride);
@@ -533,6 +539,39 @@ async function streamAnthropicInto(enc, messages, signal) {
 }
 
 // ── Max engine: OpenRouter (OpenAI-compatible, free DeepSeek-R1) ──
+async function streamGeminiInto(enc, messages, signal) {
+  if (!GEMINI_API_KEY) return false;
+  const msgs = messages.filter((m) => m.role === "system" || m.role === "user" || m.role === "assistant").map((m) => ({ role: m.role, content: String(m.content || "") }));
+  if (!msgs.length) return false;
+  for (const model of GEMINI_TEXT_MODELS) {
+    const reqBody = JSON.stringify({ model, messages: msgs, stream: true });
+    let upstream;
+    try { upstream = await fetch(GEMINI_OAI_URL, { method: "POST", headers: { "content-type": "application/json", "Authorization": "Bearer " + GEMINI_API_KEY }, body: reqBody, signal }); }
+    catch (e) { if (signal.aborted) return true; continue; }
+    if (!upstream.ok || !upstream.body) { try { upstream && upstream.body && upstream.body.cancel(); } catch (_) {} continue; }
+    const reader = upstream.body.getReader(); let buffer = "", any = false;
+    try {
+      while (true) {
+        const { done, value } = await reader.read(); if (done) break;
+        buffer += td.decode(value, { stream: true });
+        let nl;
+        while ((nl = buffer.indexOf("\n")) !== -1) {
+          let line = buffer.slice(0, nl); buffer = buffer.slice(nl + 1);
+          if (line.endsWith("\r")) line = line.slice(0, -1);
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          let evt; try { evt = JSON.parse(payload); } catch { continue; }
+          const delta = evt.choices && evt.choices[0] && evt.choices[0].delta;
+          if (delta && delta.content) { const f = sseFrame(delta.content); if (f) enc(f); any = true; }
+        }
+      }
+      if (any) return true;   // served by this id; otherwise try the next candidate
+    } catch (e) { return signal.aborted ? true : any; }
+  }
+  return false;
+}
+
 async function streamOpenRouterInto(enc, messages, signal) {
   if (!OPENROUTER_API_KEY) return false;
   const msgs = messages.filter((m) => m.role === "system" || m.role === "user" || m.role === "assistant").map((m) => ({ role: m.role, content: String(m.content || "") }));

@@ -53,7 +53,7 @@ function ollamaHeaders() {
 }
 
 // PREMIUM "Max" tier engines (server-side keys only — end users stay keyless).
-// Max chain: Claude Sonnet (paid) → OpenRouter free (DeepSeek-R1) → Ollama/pollinations.
+// Max chain: Gemini Flash (free) → Claude Sonnet (paid) → OpenRouter free (Nemotron) → Ollama/pollinations.
 const ANTHROPIC_API_KEY  = process.env.ANTHROPIC_API_KEY || "";
 const ANTHROPIC_MODEL    = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
 const ANTHROPIC_URL      = "https://api.anthropic.com/v1/messages";
@@ -61,6 +61,13 @@ const ANTHROPIC_MAX_TOK  = Math.max(1024, parseInt(process.env.ANTHROPIC_MAX_TOK
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 const OPENROUTER_MODEL   = process.env.OPENROUTER_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
 const OPENROUTER_URL     = "https://openrouter.ai/api/v1/chat/completions";
+// Gemini TEXT for the Max tier — Google AI Studio FREE tier (Flash family is free,
+// ~1500 req/day, no credit card; the stronger Pro tier is paid since Apr 2026). Uses
+// Gemini's OpenAI-compatible endpoint so it streams exactly like OpenRouter. Tried FIRST
+// in the Max chain. GEMINI_TEXT_MODEL may be a comma-separated fallback list of ids — the
+// adapter uses the first that actually streams (resilient to Google's model-id churn).
+const GEMINI_TEXT_MODELS = (process.env.GEMINI_TEXT_MODEL || "gemini-flash-latest,gemini-3-flash,gemini-2.5-flash").split(",").map((s) => s.trim()).filter(Boolean);
+const GEMINI_OAI_URL     = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 // Gemini image model (Google AI Studio "Nano Banana") — actual Gemini-level quality.
 // If GEMINI_API_KEY is set, /api/image uses it FIRST, falling back to keyless
 // pollinations on error/quota. Free key, NO credit card (aistudio.google.com).
@@ -1515,6 +1522,57 @@ function handleVersion(req, res) {
 }
 
 // ── Max engine: Claude (Anthropic Messages API → our SSE) ───────────────────
+// ── Max engine: Gemini (OpenAI-compatible, FREE Flash tier) ──────────────────
+// Tries each id in GEMINI_TEXT_MODELS until one streams. Returns true if it streamed
+// any bytes, false if every candidate failed before any content (so the caller falls
+// back to the next engine). Does NOT send terminal [DONE] — handleChat's finally does.
+async function streamGemini(res, messages, signal) {
+  if (!GEMINI_API_KEY) return false;
+  const msgs = messages
+    .filter((m) => m.role === "system" || m.role === "user" || m.role === "assistant")
+    .map((m) => ({ role: m.role, content: String(m.content || "") }));
+  if (!msgs.length) return false;
+  for (const model of GEMINI_TEXT_MODELS) {
+    if (res.writableEnded) return true;
+    const body = JSON.stringify({ model, messages: msgs, stream: true });
+    let upstream;
+    try {
+      upstream = await fetch(GEMINI_OAI_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + GEMINI_API_KEY },
+        body, signal,
+      });
+    } catch (e) { if (signal.aborted) return true; continue; }
+    if (!upstream.ok || !upstream.body) {
+      console.error("[firas] Max→Gemini (" + model + ") HTTP " + (upstream && upstream.status) + " — trying next");
+      try { upstream && upstream.body && upstream.body.cancel(); } catch (_) {}
+      continue;
+    }
+    const decoder = new TextDecoder();
+    let buffer = "", any = false;
+    try {
+      for await (const chunk of upstream.body) {
+        if (res.writableEnded) break;
+        buffer += decoder.decode(chunk, { stream: true });
+        let nl;
+        while ((nl = buffer.indexOf("\n")) !== -1) {
+          let line = buffer.slice(0, nl); buffer = buffer.slice(nl + 1);
+          if (line.endsWith("\r")) line = line.slice(0, -1);
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          let evt; try { evt = JSON.parse(payload); } catch { continue; }
+          const delta = evt.choices && evt.choices[0] && evt.choices[0].delta;
+          if (delta && delta.content) { sseWrite(res, delta.content); any = true; }
+        }
+      }
+      if (any) { console.log("[firas] Max served by Gemini (" + model + ")"); return true; }
+      // 200 but no content → try the next candidate id
+    } catch (e) { return signal.aborted ? true : any; }
+  }
+  return false;
+}
+
 // Returns true if it streamed any answer, false if it failed BEFORE any bytes
 // (no key / 402 no-credit / error) so the caller can fall back. Does NOT send the
 // terminal [DONE] — handleChat's finally does that.
@@ -1845,11 +1903,12 @@ async function handleChat(req, res) {
 
   try {
     let served = false;
-    // Max tier → premium external engines FIRST: Claude Sonnet (paid), then
-    // OpenRouter free (DeepSeek-R1) when Claude has no credit/fails. Each returns
-    // false if it failed before any bytes, so the chain degrades cleanly.
+    // Max tier → premium external engines FIRST: Gemini Flash (free) → Claude Sonnet
+    // (paid) → OpenRouter free (Nemotron). Each returns false if it failed before any
+    // bytes, so the chain degrades cleanly to the next engine.
     if (tier === "max" && !vision) {
-      served = await streamAnthropic(res, messages, ac.signal);
+      served = await streamGemini(res, messages, ac.signal);
+      if (!served && !res.writableEnded) served = await streamAnthropic(res, messages, ac.signal);
       if (!served && !res.writableEnded) served = await streamOpenRouter(res, messages, ac.signal);
     }
     const ok = served ? true : await streamOllama(res, ollamaMessages, tier, think, ac.signal, modelOverride);
