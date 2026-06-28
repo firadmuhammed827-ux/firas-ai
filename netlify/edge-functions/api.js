@@ -52,11 +52,14 @@ let _puterCooldownUntil = 0; // set when Puter is out of credits → skip the do
 // Cloudflare account → Account ID + an API token with "Workers AI" permission.
 const CF_ACCOUNT_ID  = env("CF_ACCOUNT_ID") || "";
 const CF_API_TOKEN   = env("CF_API_TOKEN") || "";
-// Default = Leonardo "Lucid Origin": sharper than flux-1-schnell + far better in-image
-// text, still free & simple JSON API. Set @cf/black-forest-labs/flux-1-schnell for the
-// cheapest / most-images-per-day option. (FLUX.2 needs a multipart request — not wired.)
-const CF_IMAGE_MODEL = env("CF_IMAGE_MODEL") || "@cf/leonardo/lucid-origin";
+// Default = FLUX.2 Klein 9B: newest FLUX.2 — excellent quality + best free in-image text
+// AND fast (~4s), far better value than flux-2-dev (same quality, ~80s — would also TIME
+// OUT on the edge). ~65 free imgs/day. FLUX.2 needs multipart (handled below). Higher
+// volume: @cf/black-forest-labs/flux-1-schnell (~130/day). NOTE: flux-2-dev is too slow
+// for the edge's response window — keep a fast model (klein/schnell/leonardo) here.
+const CF_IMAGE_MODEL = env("CF_IMAGE_MODEL") || "@cf/black-forest-labs/flux-2-klein-9b";
 const CF_IMAGE_STEPS = Math.min(8, Math.max(1, parseInt(env("CF_IMAGE_STEPS") || "6", 10) || 6));
+let _cfCooldownUntil = 0; // set when CF's daily 10k-neuron quota is exhausted (429)
 function sniffImageMime(b) { if (!b || b.length < 4) return "image/jpeg"; if (b[0] === 0x89 && b[1] === 0x50) return "image/png"; if (b[0] === 0xFF && b[1] === 0xD8) return "image/jpeg"; if (b[0] === 0x52 && b[1] === 0x49 && b[8] === 0x57) return "image/webp"; return "image/jpeg"; }
 const UPSTREAM_TIMEOUT_MS = Number(env("REQUEST_TIMEOUT_MS")) || 300000;
 
@@ -580,25 +583,36 @@ async function generateImagePuter(prompt) {
 
 // Generate an image via Cloudflare Workers AI (free daily quota, reliable). flux-schnell
 // returns base64 in {result:{image}}; SDXL-style models return raw bytes. {bytes,mime}|null.
-async function generateImageCloudflare(prompt) {
+async function generateImageCloudflare(prompt, w, h) {
   if (!CF_ACCOUNT_ID || !CF_API_TOKEN) return null;
+  if (Date.now() < _cfCooldownUntil) return null;
   const ac = new AbortController();
-  const to = setTimeout(() => ac.abort(), 60000);
+  const to = setTimeout(() => ac.abort(), 90000);
   try {
     const url = "https://api.cloudflare.com/client/v4/accounts/" + CF_ACCOUNT_ID + "/ai/run/" + CF_IMAGE_MODEL;
-    const body = { prompt: String(prompt || "").slice(0, 2000) };
-    if (/flux/i.test(CF_IMAGE_MODEL)) body.steps = CF_IMAGE_STEPS;
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "Authorization": "Bearer " + CF_API_TOKEN, "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: ac.signal,
-    });
-    if (!r.ok) return null;
+    const text = String(prompt || "").slice(0, 2000);
+    let r;
+    if (/flux-2/i.test(CF_IMAGE_MODEL)) {
+      // FLUX.2 needs multipart/form-data — don't set content-type (fetch adds the boundary).
+      const fd = new FormData();
+      fd.append("prompt", text);
+      fd.append("steps", String(CF_IMAGE_STEPS));
+      fd.append("width", String(w || 1024));
+      fd.append("height", String(h || 1024));
+      r = await fetch(url, { method: "POST", headers: { "Authorization": "Bearer " + CF_API_TOKEN }, body: fd, signal: ac.signal });
+    } else {
+      const body = { prompt: text };
+      if (/flux-1|schnell/i.test(CF_IMAGE_MODEL)) body.steps = CF_IMAGE_STEPS;
+      r = await fetch(url, { method: "POST", headers: { "Authorization": "Bearer " + CF_API_TOKEN, "content-type": "application/json" }, body: JSON.stringify(body), signal: ac.signal });
+    }
+    if (!r.ok) {
+      if (r.status === 429 || /allocation|neurons/i.test(await r.text().catch(() => ""))) { _cfCooldownUntil = Date.now() + 30 * 60000; }
+      return null;
+    }
     const ct = (r.headers.get("content-type") || "").toLowerCase();
     if (ct.startsWith("image/")) { const bytes = new Uint8Array(await r.arrayBuffer()); return bytes.length ? { bytes, mime: ct } : null; }
     const j = await r.json().catch(() => null);
-    const b64 = j && j.result && (j.result.image || (Array.isArray(j.result.images) && j.result.images[0]));
+    const b64 = j && ((j.result && (j.result.image || (Array.isArray(j.result.images) && j.result.images[0]))) || j.image);
     if (typeof b64 === "string" && b64.length > 100) {
       const clean = b64.startsWith("data:") ? b64.slice(b64.indexOf(",") + 1) : b64;
       try { const bytes = b64ToBytes(clean); return bytes.length ? { bytes, mime: sniffImageMime(bytes) } : null; } catch (_) { return null; }
@@ -866,9 +880,9 @@ export default async (request, context) => {
           return new Response(gem.bytes, { headers: { "Content-Type": gem.mime, "Cache-Control": "public, max-age=86400" } });
         }
       } catch (_) { /* fall through */ }
-      // Cloudflare Workers AI (free daily quota, reliable) → flux-schnell quality.
+      // Cloudflare Workers AI (free daily quota, reliable) → FLUX.2 quality.
       try {
-        const cf = await generateImageCloudflare(prompt);
+        const cf = await generateImageCloudflare(prompt, w, h);
         if (cf && cf.bytes && cf.bytes.length) {
           if (isNew) { try { await dbPut(`imgQuota/${user.id}/${day}/${cid}`, true); } catch (_) {} }
           return new Response(cf.bytes, { headers: { "Content-Type": cf.mime, "Cache-Control": "public, max-age=86400" } });

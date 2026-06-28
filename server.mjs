@@ -94,12 +94,13 @@ const PUTER_MODEL_ALIASES = { "nano-banana": "gemini-2.5-flash-image-preview", "
 // "Workers AI" permission. Tried after the premium engines, before keyless pollinations.
 const CF_ACCOUNT_ID  = process.env.CF_ACCOUNT_ID || "";
 const CF_API_TOKEN   = process.env.CF_API_TOKEN || "";
-// Default = Leonardo "Lucid Origin": much sharper than flux-1-schnell + far better
-// in-image text (verified: legible "Firas AI"), still free & simple JSON API. Use
-// @cf/black-forest-labs/flux-1-schnell for the cheapest / most-images-per-day option.
-// (FLUX.2 dev/klein are even newer but need a multipart request — not wired here.)
-const CF_IMAGE_MODEL = process.env.CF_IMAGE_MODEL || "@cf/leonardo/lucid-origin";
-const CF_IMAGE_STEPS = Math.min(8, Math.max(1, parseInt(process.env.CF_IMAGE_STEPS || "6", 10) || 6)); // flux-schnell max 8
+// Default = FLUX.2 Klein 9B: newest FLUX.2 family — excellent quality + the BEST free
+// in-image text (legible "Firas AI") AND fast (~4s at 6 steps), far better value than
+// flux-2-dev (same quality, ~80s). ~65 free imgs/day. FLUX.2 needs a multipart request
+// (handled in generateImageCloudflare). Higher volume: @cf/black-forest-labs/flux-1-schnell
+// (~130/day, weak text). Premium-but-pricey: @cf/leonardo/lucid-origin (~4/day).
+const CF_IMAGE_MODEL = process.env.CF_IMAGE_MODEL || "@cf/black-forest-labs/flux-2-klein-9b";
+const CF_IMAGE_STEPS = Math.min(8, Math.max(1, parseInt(process.env.CF_IMAGE_STEPS || "6", 10) || 6));
 
 // Tier -> Ollama model + generation params (env-overridable).
 // num_predict = MAX output tokens. Generous so long outputs (a full single-file
@@ -1266,30 +1267,46 @@ function sniffImageMime(buf) {
   return "image/jpeg";
 }
 
-// Generate an image via Cloudflare Workers AI (free daily quota, reliable). Leonardo /
-// flux return base64 in {result:{image}}; SDXL-style models return raw bytes. {buf,mime}|null.
-async function generateImageCloudflare(prompt) {
+// Generate an image via Cloudflare Workers AI (free daily quota, reliable). FLUX.2 models
+// require multipart/form-data; flux-1/Leonardo take simple JSON. Response is base64 in
+// {result:{image}} (or raw image bytes for some). Returns {buf,mime} or null.
+let _cfCooldownUntil = 0; // set when CF's daily 10k-neuron quota is exhausted (429) → skip it
+async function generateImageCloudflare(prompt, w, h) {
   if (!CF_ACCOUNT_ID || !CF_API_TOKEN) return null;
+  if (Date.now() < _cfCooldownUntil) return null;
   const ac = new AbortController();
-  const to = setTimeout(() => ac.abort(), 60_000);
+  const to = setTimeout(() => ac.abort(), 90_000); // flux-2-klein ~4s; flux-2-dev can be ~80s
   try {
     const url = "https://api.cloudflare.com/client/v4/accounts/" + CF_ACCOUNT_ID + "/ai/run/" + CF_IMAGE_MODEL;
-    const body = { prompt: String(prompt || "").slice(0, 2000) };
-    if (/flux/i.test(CF_IMAGE_MODEL)) body.steps = CF_IMAGE_STEPS;
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "Authorization": "Bearer " + CF_API_TOKEN, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: ac.signal,
-    });
-    if (!r.ok) { console.error("[firas] Cloudflare image HTTP " + r.status + ": " + (await r.text().catch(() => "")).slice(0, 200)); return null; }
+    const text = String(prompt || "").slice(0, 2000);
+    let r;
+    if (/flux-2/i.test(CF_IMAGE_MODEL)) {
+      // FLUX.2 needs multipart/form-data. Do NOT set Content-Type — fetch adds the
+      // multipart boundary automatically when the body is a FormData.
+      const fd = new FormData();
+      fd.append("prompt", text);
+      fd.append("steps", String(CF_IMAGE_STEPS));
+      fd.append("width", String(w || 1024));
+      fd.append("height", String(h || 1024));
+      r = await fetch(url, { method: "POST", headers: { "Authorization": "Bearer " + CF_API_TOKEN }, body: fd, signal: ac.signal });
+    } else {
+      const body = { prompt: text };
+      if (/flux-1|schnell/i.test(CF_IMAGE_MODEL)) body.steps = CF_IMAGE_STEPS;
+      r = await fetch(url, { method: "POST", headers: { "Authorization": "Bearer " + CF_API_TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ac.signal });
+    }
+    if (!r.ok) {
+      const errBody = await r.text().catch(() => "");
+      if (r.status === 429 || /allocation|neurons/i.test(errBody)) { _cfCooldownUntil = Date.now() + 30 * 60_000; } // daily quota used → back off 30 min
+      console.error("[firas] Cloudflare image HTTP " + r.status + ": " + errBody.slice(0, 200));
+      return null;
+    }
     const ct = (r.headers.get("content-type") || "").toLowerCase();
     if (ct.startsWith("image/")) {
       const buf = Buffer.from(await r.arrayBuffer());
       return buf.length ? { buf, mime: ct } : null;
     }
     const j = await r.json().catch(() => null);
-    const b64 = j && j.result && (j.result.image || (Array.isArray(j.result.images) && j.result.images[0]));
+    const b64 = j && ((j.result && (j.result.image || (Array.isArray(j.result.images) && j.result.images[0]))) || j.image);
     if (typeof b64 === "string" && b64.length > 100) {
       const clean = b64.startsWith("data:") ? b64.slice(b64.indexOf(",") + 1) : b64;
       const buf = Buffer.from(clean, "base64");
@@ -1401,9 +1418,9 @@ async function handleImage(req, res) {
     }
     if (GEMINI_API_KEY) console.error("[firas] Gemini returned no image → next engine");
   } catch (_) { if (GEMINI_API_KEY) console.error("[firas] Gemini error → next engine"); }
-  // 1c) Cloudflare Workers AI (free daily quota, reliable) → flux-schnell quality.
+  // 1c) Cloudflare Workers AI (free daily quota, reliable) → FLUX.2 quality.
   try {
-    const cf = await generateImageCloudflare(prompt);
+    const cf = await generateImageCloudflare(prompt, w, h);
     if (cf && cf.buf && cf.buf.length) {
       console.log("[firas] image served by Cloudflare (" + CF_IMAGE_MODEL + ")");
       await imgCacheSet(ckey, cf.buf, cf.mime);
