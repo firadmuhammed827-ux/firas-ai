@@ -1415,8 +1415,20 @@ async function handleImage(req, res) {
     res.writeHead(200, { "Content-Type": cached.mime, "Cache-Control": "public, max-age=86400" });
     return res.end(cached.buf);
   }
-  // 0) Puter (developer token, server-side) → real GPT-Image/Gemini quality, NO user
-  // login. Best free option; tried FIRST when PUTER_AUTH_TOKEN is set.
+  // 0) Cloudflare Workers AI (FREE FLUX.2, ~65/day) → PRIMARY: great quality + in-image
+  // text at NO per-image cost and no user login. Falls through to Puter when its daily
+  // quota is exhausted, so paid credits are only spent once the free pool is gone.
+  try {
+    const cf = await generateImageCloudflare(prompt, w, h);
+    if (cf && cf.buf && cf.buf.length) {
+      console.log("[firas] image served by Cloudflare (" + CF_IMAGE_MODEL + ")");
+      await imgCacheSet(ckey, cf.buf, cf.mime);
+      if (isNew) { user.imgCids.push(cid); persist(); }
+      res.writeHead(200, { "Content-Type": cf.mime, "Cache-Control": "public, max-age=86400" });
+      return res.end(cf.buf);
+    }
+  } catch (_) { /* fall through to Puter */ }
+  // 1) Puter gpt-image-2 (paid credits) → premium fallback: the sharpest in-image text.
   try {
     const put = await generateImagePuter(prompt);
     if (put && put.buf && put.buf.length) {
@@ -1428,7 +1440,7 @@ async function handleImage(req, res) {
     }
     if (PUTER_AUTH_TOKEN) console.error("[firas] Puter returned no image → next engine");
   } catch (_) { if (PUTER_AUTH_TOKEN) console.error("[firas] Puter error → next engine"); }
-  // 1) Gemini (free key) → actual Gemini-image quality. Falls back to pollinations.
+  // 2) Gemini (free key) → actual Gemini-image quality. Falls back to pollinations.
   try {
     const gem = await generateImageGemini(prompt);
     if (gem && gem.buf && gem.buf.length) {
@@ -1440,17 +1452,6 @@ async function handleImage(req, res) {
     }
     if (GEMINI_API_KEY) console.error("[firas] Gemini returned no image → next engine");
   } catch (_) { if (GEMINI_API_KEY) console.error("[firas] Gemini error → next engine"); }
-  // 1c) Cloudflare Workers AI (free daily quota, reliable) → FLUX.2 quality.
-  try {
-    const cf = await generateImageCloudflare(prompt, w, h);
-    if (cf && cf.buf && cf.buf.length) {
-      console.log("[firas] image served by Cloudflare (" + CF_IMAGE_MODEL + ")");
-      await imgCacheSet(ckey, cf.buf, cf.mime);
-      if (isNew) { user.imgCids.push(cid); persist(); }
-      res.writeHead(200, { "Content-Type": cf.mime, "Cache-Control": "public, max-age=86400" });
-      return res.end(cf.buf);
-    }
-  } catch (_) { /* fall through to HF/pollinations */ }
   // 1b) Hugging Face FLUX.1-schnell (free token) → lossless PNG; ~on par with keyless.
   try {
     const hf = await generateImageHF(prompt);

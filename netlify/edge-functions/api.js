@@ -884,8 +884,16 @@ export default async (request, context) => {
       const w = Math.min(1280, Math.max(256, parseInt(url.searchParams.get("w"), 10) || 1024));
       const h = Math.min(1280, Math.max(256, parseInt(url.searchParams.get("h"), 10) || 1024));
       const seed = (url.searchParams.get("seed") || "").replace(/[^0-9]/g, "").slice(0, 12);
-      // Puter (developer token, server-side) FIRST → real GPT-Image/Gemini quality, NO
-      // user login. Browser Cache-Control (below) keeps same-device reloads free/stable.
+      // Cloudflare Workers AI (FREE FLUX.2, ~65/day) FIRST → great quality + in-image text,
+      // no per-image cost, no user login. Falls through to Puter when its daily quota is gone.
+      try {
+        const cf = await generateImageCloudflare(prompt, w, h);
+        if (cf && cf.bytes && cf.bytes.length) {
+          if (isNew) { try { await dbPut(`imgQuota/${user.id}/${day}/${cid}`, true); } catch (_) {} }
+          return new Response(cf.bytes, { headers: { "Content-Type": cf.mime, "Cache-Control": "public, max-age=86400" } });
+        }
+      } catch (_) { /* fall through */ }
+      // Puter gpt-image-2 (paid credits) → premium fallback: the sharpest in-image text.
       try {
         const put = await generateImagePuter(prompt);
         if (put && put.bytes && put.bytes.length) {
@@ -899,14 +907,6 @@ export default async (request, context) => {
         if (gem && gem.bytes && gem.bytes.length) {
           if (isNew) { try { await dbPut(`imgQuota/${user.id}/${day}/${cid}`, true); } catch (_) {} }
           return new Response(gem.bytes, { headers: { "Content-Type": gem.mime, "Cache-Control": "public, max-age=86400" } });
-        }
-      } catch (_) { /* fall through */ }
-      // Cloudflare Workers AI (free daily quota, reliable) → FLUX.2 quality.
-      try {
-        const cf = await generateImageCloudflare(prompt, w, h);
-        if (cf && cf.bytes && cf.bytes.length) {
-          if (isNew) { try { await dbPut(`imgQuota/${user.id}/${day}/${cid}`, true); } catch (_) {} }
-          return new Response(cf.bytes, { headers: { "Content-Type": cf.mime, "Cache-Control": "public, max-age=86400" } });
         }
       } catch (_) { /* fall through */ }
       // Hugging Face FLUX.1-schnell (free token) → lossless PNG; ~on par with keyless.
