@@ -4310,7 +4310,8 @@ function fileStageText(stage, lang) {
   const ar = lang === "ar";
   if (stage === "plan") return ar ? "يخطّط لهيكل الملف…" : "Planning the file…";
   if (stage === "content") return ar ? "يكتب المحتوى…" : "Writing the content…";
-  return ar ? "يجمّع ويُخرج باحتراف…" : "Assembling & polishing…";
+  if (stage === "assemble" || !stage) return ar ? "يجمّع ويُخرج باحتراف…" : "Assembling & polishing…";
+  return String(stage); // custom live-progress message (e.g. "Writing integrals… 400/1000")
 }
 
 /** One engine call returning the full text (the pipeline's building block). */
@@ -4753,13 +4754,18 @@ async function runBatchedFileDoc(userText, count, fmt, lang, tierKey, signal, on
   const ranges = [];
   for (let i = 0; i < Math.ceil(count / BATCH); i++) ranges.push({ start: i * BATCH + 1, end: Math.min((i + 1) * BATCH, count), cat: DEFAULT_ITEM_CATEGORIES[i % DEFAULT_ITEM_CATEGORIES.length] });
   onStage("content");
-  const outs = await mapWithLimit(ranges, 5, async (r) => {
+  let done = 0;
+  const outs = await mapWithLimit(ranges, 8, async (r) => {
+    let res = "";
     try {
-      return (await callAgentText([
+      res = (await callAgentText([
         { role: "system", content: batchAuthorSys(lang) },
         { role: "user", content: batchUserMsg(userText, r.start, r.end, r.cat, lang) },
       ], tierKey, signal)).trim();
-    } catch (e) { if (signal.aborted) throw e; return ""; }
+    } catch (e) { if (signal.aborted) throw e; res = ""; }  // a failed batch is skipped, not fatal
+    done++;
+    onStage((lang === "ar" ? "يكتب التكاملات… " : "Writing integrals… ") + Math.min(done * BATCH, count) + "/" + count);
+    return res;
   });
   onStage("assemble");
   const probs = [], ans = [];
@@ -4837,9 +4843,10 @@ async function streamAnswer(aiMsg, aiNode, chat) {
   const controller = new AbortController();
   const { signal } = controller;
 
-  // Timeout guard — 5 min, matching the server, so long outputs (full websites,
-  // long documents, multi-part science answers) are not cut off in the browser.
-  const timeoutId = setTimeout(() => { try { controller.abort("timeout"); } catch (_) {} }, 300000);
+  // Timeout guard — 12 min (each underlying /api/chat call is still bounded by the
+  // server's own 5-min limit; this larger budget lets MULTI-call flows like a batched
+  // 1000-item workbook finish instead of being cut off in the browser).
+  const timeoutId = setTimeout(() => { try { controller.abort("timeout"); } catch (_) {} }, 720000);
 
   // Register this in-flight stream by chat id so Stop can target it precisely and
   // navigation can leave it running.
