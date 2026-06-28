@@ -3133,6 +3133,14 @@ function exportCss(th, isAr, scope) {
     dp + "p{margin:0 0 .75em;orphans:2;widows:2}" +
     dp + "ul," + dp + "ol{margin:0 0 .8em;padding-inline-start:1.5em}" + dp + "li{margin:.3em 0;page-break-inside:avoid}" +
     dp + "li::marker{color:#" + th.accent + "}" +
+    // Ordered lists whose markers we replaced with explicit inline number spans (buildExportRoot):
+    // html2canvas clips/corrupts CSS ::marker digits (the leftmost digit of "60" prints as "30"),
+    // so we render the number as ordinary text in a fixed left gutter that NEVER overflows — even
+    // for 4-digit numbers in a 1000-problem book.
+    dp + "ol.li-explicit{list-style:none;padding-inline-start:0}" +
+    dp + "ol.li-explicit>li{margin:.34em 0;page-break-inside:avoid;display:flex;align-items:flex-start;gap:.1em}" +
+    dp + "ol.li-explicit>li>.li-n{flex:0 0 auto;min-width:3.1em;text-align:end;padding-inline-end:.55em;color:#" + th.accent + ";font-weight:700;font-variant-numeric:tabular-nums}" +
+    dp + "ol.li-explicit>li>.li-body{flex:1 1 auto;min-width:0}" +
     dp + "a{color:#" + th.accent + ";text-decoration:underline}" + dp + "strong{font-weight:700}" + dp + "em{font-style:italic}" +
     dp + "blockquote{margin:.6em 0 1em;padding:.7em 1.1em;border-inline-start:4px solid #" + th.accent + ";background:#" + th.soft + ";color:#" + ink + ";border-radius:0 6px 6px 0;page-break-inside:avoid}" +
     rdp + "blockquote{border-radius:6px 0 0 6px}" +
@@ -3205,7 +3213,36 @@ function buildExportRoot(mdNode, lang, meta) {
   // html2canvas can scroll to and capture it; far off-screen keeps it invisible.
   root.style.cssText = "position:absolute;left:-10000px;top:0;width:794px;background:#" + (th.bg || "FFFFFF") + ";z-index:-1";
   root.innerHTML = "<style>" + exportCss(th, isAr, "#firasExportRoot") + "</style>" + cover + "<div class='doc'>" + body + "</div>";
+  numberListsExplicitly(root.querySelector(".doc"));
   return root;
+}
+
+/** Replace every ordered-list CSS marker with an explicit inline number span, numbered
+    CONTINUOUSLY across the whole document (counter resets at each top-level H1, so the
+    Answer Key re-starts at 1 alongside the problems). Two bugs this kills at once:
+      1. LEFT-EDGE CLIP — html2canvas mis-renders ::marker digits ("60"→"30", "66"→"36");
+         a real text span in a fixed gutter always renders correctly.
+      2. NUMBER RESET — if marked.js split the problems into several <ol>s (a stray blank
+         line between batches), each restarted at 1; a single running counter fixes that. */
+function numberListsExplicitly(docEl) {
+  if (!docEl) return;
+  let n = 0;
+  // querySelectorAll yields matches in document order, so H1 resets and <li> numbering interleave correctly.
+  docEl.querySelectorAll("h1, ol > li").forEach((el) => {
+    if (el.tagName === "H1") { n = 0; return; }
+    const ol = el.parentElement;
+    if (!ol || ol.tagName !== "OL") return;
+    ol.classList.add("li-explicit");
+    n += 1;
+    const num = document.createElement("span");
+    num.className = "li-n";
+    num.textContent = n + ".";
+    const bodyWrap = document.createElement("span");
+    bodyWrap.className = "li-body";
+    while (el.firstChild) bodyWrap.appendChild(el.firstChild);
+    el.appendChild(num);
+    el.appendChild(bodyWrap);
+  });
 }
 
 /** Extract tables from a rendered .md node as arrays-of-rows (for Excel). */
@@ -4704,29 +4741,71 @@ async function runFileAgentPipeline(convo, fmt, lang, tierKey, signal, onStage) 
 
 /* ---- Large workbooks: generate N items in parallel BATCHES (no truncation) ---- */
 const DEFAULT_ITEM_CATEGORIES = [
-  "basic algebraic integrals", "rational functions & partial fractions", "trigonometric integrals",
-  "trigonometric substitution", "hyperbolic & inverse-hyperbolic functions", "inverse trigonometric integrals",
-  "exponential & logarithmic integrals", "integration by parts (incl. repeated)", "reduction-formula style integrals",
-  "clever u-substitutions", "definite integrals & their properties", "symmetry-based definite integrals",
-  "floor / greatest-integer & piecewise integrals", "absolute-value integrals", "mixed-technique tricky integrals",
-  "JEE-Advanced style integrals", "Olympiad-style integrals", "famous classical integrals",
-  "creative / original integrals", "mixed miscellaneous integrals",
+  "non-obvious algebraic substitutions (e.g. \\int dx/(x\\sqrt{x^4+1}), \\int\\sqrt{\\tan x}\\,dx)",
+  "definite integrals via King's property \\int_a^b f(x)dx=\\int_a^b f(a+b-x)dx",
+  "symmetry / x\\to 1/x / periodicity tricks for definite integrals",
+  "Weierstrass t=\\tan(x/2) and hard rational-trigonometric integrals",
+  "reduction formulas & Wallis \\int_0^{\\pi/2}\\sin^m\\cos^n",
+  "Frullani & differentiation-under-the-integral (Feynman) with clean closed forms",
+  "log-trig definite integrals (the \\int_0^{\\pi/2}\\ln(\\sin x) family)",
+  "repeated integration by parts / telescoping tricks",
+  "partial fractions with irreducible quadratics & high powers",
+  "advanced trigonometric & hyperbolic substitution",
+  "inverse-trig / inverse-hyperbolic results (arctan / arcsinh forms)",
+  "rationalizing substitutions for nested radicals",
+  "JEE-Advanced indefinite integrals at real exam difficulty",
+  "Putnam / Olympiad definite integrals with elementary closed form",
+  "creative original hard integrals with a surprising clean answer",
+  "exponential·trigonometric products via repeated by-parts",
+  "absolute-value / greatest-integer definite integrals",
+  "two-step non-obvious substitution chains",
+  "definite integrals collapsing to \\pi, \\ln 2, or simple closed forms",
+  "mixed hard miscellaneous (no pattern repeats)",
 ];
+// Few-shot calibration: VERIFIED hard integrals (each independently re-derived & confirmed by an
+// adversarial checker). Pulls the model up to JEE-Advanced/Olympiad level by EXAMPLE, not adjective.
+const HARD_INTEGRAL_SEEDS = [
+  { p: "\\int_{0}^{\\pi} \\frac{x\\,\\sin x}{1+\\cos^{2} x}\\,dx", a: "\\frac{\\pi^{2}}{4}" },
+  { p: "\\int_{0}^{\\pi/2} \\ln\\!\\left(9\\cos^{2}\\theta + \\sin^{2}\\theta\\right)\\, d\\theta", a: "\\pi\\ln 2" },
+  { p: "\\int_{0}^{\\pi/2}\\frac{dx}{1+\\tan^{2026} x}", a: "\\dfrac{\\pi}{4}" },
+  { p: "\\int_{0}^{\\infty} \\frac{e^{-2x}\\cos 2x - e^{-3x}\\cos 3x}{x}\\,dx", a: "\\ln\\frac{3}{2}" },
+  { p: "\\int \\frac{dx}{\\sin x + \\cos x + 2}", a: "\\sqrt{2}\\,\\arctan\\!\\left(\\frac{\\tan\\frac{x}{2}+1}{\\sqrt{2}}\\right) + C" },
+  { p: "\\int_{0}^{\\pi/2} \\sin^{6}x\\,\\cos^{4}x \\, dx", a: "\\dfrac{3\\pi}{512}" },
+  { p: "\\int \\frac{x^2-1}{(x^2+1)\\sqrt{x^4+1}}\\,dx", a: "\\frac{1}{\\sqrt{2}}\\arctan\\!\\left(\\frac{\\sqrt{x^4+1}}{\\sqrt{2}\\,x}\\right)+C" },
+  { p: "\\int_{0}^{1} \\frac{\\ln(1+x)}{1+x^{2}}\\,dx", a: "\\frac{\\pi}{8}\\ln 2" },
+  { p: "\\int_{0}^{\\pi/2} \\frac{x}{\\sin x + \\cos x}\\,dx", a: "\\frac{\\pi\\sqrt{2}}{4}\\ln\\!\\left(1+\\sqrt{2}\\right)" },
+  { p: "\\int_{0}^{\\infty} \\frac{\\cos 3x \\, \\cos x - \\cos 5x \\, \\cos 2x}{x}\\,dx", a: "\\frac{1}{2}\\ln\\frac{21}{8}" },
+  { p: "\\int \\frac{x^2+1}{(x^2-1)\\sqrt{x^4+1}}\\,dx", a: "-\\frac{1}{\\sqrt{2}}\\,\\operatorname{arctanh}\\!\\left(\\frac{\\sqrt{2}\\,x}{\\sqrt{x^4+1}}\\right)+C" },
+  { p: "\\int_{0}^{\\pi/2} \\sin^{9}x\\,\\cos^{5}x \\, dx", a: "\\dfrac{1}{210}" },
+];
+let _seedRot = 0;
+function seedExamples() {
+  if (!HARD_INTEGRAL_SEEDS.length) return "";
+  const n = HARD_INTEGRAL_SEEDS.length;
+  const start = (_seedRot++ * 3) % n;   // shift the window each batch → varied exemplars, less verbatim echo
+  const pick = Array.from({ length: Math.min(8, n) }, (_, i) => HARD_INTEGRAL_SEEDS[(start + i) % n]);
+  return "\n\nCALIBRATION — these are AT the target difficulty (match their LEVEL and variety; do NOT copy them verbatim):\n" +
+    pick.map((e, i) => (i + 1) + ") $" + e.p + "$ = $" + e.a + "$").join("\n");
+}
 function batchAuthorSys(lang) {
-  return "You are an elite mathematician and Olympiad problem curator building a printable workbook. " +
-    "Output ONLY a clean numbered Markdown list of the requested problems — each on its own line as `<n>. $<expression in LaTeX>$` " +
-    "(proper LaTeX: \\int, \\frac, \\sqrt, ^{}, _{}, bounds, etc.). Then a line containing EXACTLY `<!--ANSWERS-->`, and after " +
-    "it a compact numbered list of the FINAL ANSWERS ONLY (no steps), one per line `<n>. $<answer>$`. " +
-    "Every problem must be CORRECT and solvable by classical/elementary calculus (substitution, by-parts, partial fractions, " +
-    "trig/hyperbolic identities, symmetry) — NO contour integration, complex analysis, residues, Feynman's trick, " +
-    "Fourier/Laplace, or special functions. Be CREATIVE and VARIED — never repeat a pattern; mix difficulty (beginner→Olympiad). " +
-    "Verify each answer is right. No preamble, no commentary, no headings — nothing but the numbered problems and the answers." +
-    agentBrand(lang);
+  return "You are an elite mathematician and JEE-Advanced / Olympiad problem curator building a printable, HIGH-DIFFICULTY integration workbook. " +
+    "Output ONLY a clean numbered Markdown list — each problem on its own line as `<n>. $<expression in LaTeX>$` " +
+    "(proper LaTeX: \\int, \\frac, \\sqrt, ^{}, _{}, bounds like \\int_{0}^{\\pi/2}, etc.). Then a line containing EXACTLY `<!--ANSWERS-->`, " +
+    "and after it a compact numbered list of the FINAL ANSWERS ONLY (no steps), one per line `<n>. $<answer>$`. " +
+    "DIFFICULTY: aim squarely at JEE-Advanced and Olympiad level — each problem must require a genuine IDEA, never routine drill or a bare polynomial. " +
+    "Use the full elementary toolkit: non-obvious substitutions, King's property and symmetry for definite integrals, Weierstrass t=\\tan(x/2), " +
+    "reduction formulas / Wallis, Frullani, and differentiation under the integral sign (Feynman). " +
+    "BUT every final answer MUST be an EXACT closed form (rationals, \\pi, e, \\ln, \\arctan, \\sqrt, hyperbolic) — NO special functions " +
+    "(no \\Gamma, \\zeta, \\operatorname{Li}, Si/Ci, elliptic) and NO numerical approximations. " +
+    "CORRECTNESS IS NON-NEGOTIABLE: re-derive and VERIFY every answer (differentiate an antiderivative back, or sanity-check the definite value) before writing it. " +
+    "Be CREATIVE and VARIED — never repeat a pattern. No preamble, no commentary, no headings — nothing but the numbered problems and the answers." +
+    seedExamples() + agentBrand(lang);
 }
 function batchUserMsg(userText, start, end, cat, lang) {
   return "Workbook request (context): " + String(userText).slice(0, 600) +
     "\n\nGenerate problems numbered EXACTLY " + start + " to " + end + " (" + (end - start + 1) + " problems), this batch " +
-    "FOCUSED on: " + cat + " (still mixing difficulty). Avoid textbook clones; include a few genuinely surprising ones. " +
+    "FOCUSED on: " + cat + ". Make them genuinely HARD (JEE-Advanced / Olympiad) — avoid textbook clones and trivial polynomials; " +
+    "every problem should need a real technique. Keep all answers exact closed forms and VERIFIED correct. " +
     "Output the numbered problems, then `<!--ANSWERS-->`, then the final answers.";
 }
 /** Run async workers over items with a concurrency cap; results returned in order. */
@@ -4749,9 +4828,10 @@ async function runBatchedFileDoc(userText, count, fmt, lang, tierKey, signal, on
     metaBlock = metaBlockString(parsed.meta);
     title = parsed.meta.title || (lang === "ar" ? "كتاب التكاملات" : "Integration Workbook");
   } catch (e) { if (signal.aborted) throw e; metaBlock = metaBlockString({ title: "Integration Workbook", theme: "navy" }); title = "Integration Workbook"; }
-  // Batch ranges (~35 each), each a rotating category for variety with no overlap.
-  // Smaller batches finish faster (~150s vs ~200s), so more complete inside the time budget.
-  const BATCH = 35;
+  // Batch ranges (~28 each), each a rotating category for variety with no overlap. Harder
+  // (JEE/Olympiad) problems take longer to author+verify, so smaller batches finish more
+  // reliably inside the per-batch cap and more of them complete within the time budget.
+  const BATCH = 28;
   const ranges = [];
   for (let i = 0; i < Math.ceil(count / BATCH); i++) ranges.push({ start: i * BATCH + 1, end: Math.min((i + 1) * BATCH, count), cat: DEFAULT_ITEM_CATEGORIES[i % DEFAULT_ITEM_CATEGORIES.length] });
   onStage("content");
@@ -4759,7 +4839,7 @@ async function runBatchedFileDoc(userText, count, fmt, lang, tierKey, signal, on
   // batch a generous cap (close to the server's own 5-min limit) so valid batches aren't
   // cut short, and NEVER throw — a failed/aborted batch is simply skipped so whatever
   // finished still assembles into a (possibly partial) workbook.
-  const PER_BATCH_MS = 240000;
+  const PER_BATCH_MS = 280000;
   const t0 = Date.now();
   const SOFT_BUDGET_MS = 600000;   // ~10 min: stop launching new batches and assemble what
                                    // finished, so a huge count returns a clean PARTIAL workbook
