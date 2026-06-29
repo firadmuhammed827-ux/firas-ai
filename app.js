@@ -5152,10 +5152,12 @@ function formatIrabContext(results, lang) {
  * getReader(), batches DOM updates with rAF, supports Stop (abort) + a 5-min
  * timeout, and on ANY failure serves a built-in offline fallback (never stuck).
  */
-async function streamAnswer(aiMsg, aiNode, chat) {
+async function streamAnswer(aiMsg, aiNode, chat, convoOverride) {
   const tier = MODELS[aiMsg.tier] || MODELS.pro;
   const chatId = chat.id;
-  const convo = chat.messages.slice(0, chat.messages.indexOf(aiMsg)); // up to (not incl.) this AI msg
+  // convoOverride lets "regenerate" re-answer an earlier prompt (without showing the old answer
+  // to the model) while the new reply is appended at the END of the chat.
+  const convo = convoOverride || chat.messages.slice(0, chat.messages.indexOf(aiMsg)); // up to (not incl.) this AI msg
   const replyLang = aiMsg.lang;
 
   const controller = new AbortController();
@@ -5813,7 +5815,7 @@ async function sendMessage() {
 
 /** Append an assistant placeholder for `chat` and stream into it. The stream is
     tied to `chat` (not the active view) so navigating away won't stop it. */
-async function runAssistant(chat, tier, replyLang) {
+async function runAssistant(chat, tier, replyLang, convoOverride) {
   const aiMsg = { role: "assistant", content: "", reasoning: "", tier, lang: replyLang, mode: state.mode };
   chat.messages.push(aiMsg);
 
@@ -5823,7 +5825,7 @@ async function runAssistant(chat, tier, replyLang) {
   const aiNode = els.thread.querySelector(`.msg-ai[data-index="${chat.messages.length - 1}"]`);
 
   beginStreaming(chat.id);
-  await streamAnswer(aiMsg, aiNode, chat);
+  await streamAnswer(aiMsg, aiNode, chat, convoOverride);
   learnMemory(chat); // learn durable facts about the user from this exchange (fire-and-forget)
 }
 
@@ -6358,27 +6360,13 @@ async function regenerate(index, tier) {
   const target = chat.messages[index];
   if (!target || target.role !== "assistant") return;
 
-  // Regenerating an OLDER reply discards every turn after it. That's destructive
-  // and irreversible (and persisted), so confirm when it isn't the last turn.
-  const droppedAfter = chat.messages.length - (index + 1);
-  if (droppedAfter > 0) {
-    const ok = window.confirm(
-      state.lang === "ar"
-        ? `سيؤدي هذا إلى حذف ${toArabicDigits(droppedAfter)} رسالة تالية في المحادثة. هل تريد المتابعة؟`
-        : `This will delete ${droppedAfter} later message(s) in this conversation. Continue?`
-    );
-    if (!ok) return;
-  }
-
-  // Drop the assistant message (and any trailing messages) at/after index.
-  chat.messages = chat.messages.slice(0, index);
-  // Persisted after the new reply finalizes (finalizeAi -> persistChat).
-
-  // Reply language = last user message language.
-  const lastUser = [...chat.messages].reverse().find((m) => m.role === "user");
+  // Generate a FRESH answer appended BELOW (the original answer stays). We re-answer the
+  // prompting user message WITHOUT showing the old answer to the model — and reuse any image
+  // that message carried (so regenerating an image turn works without re-sending).
+  const promptConvo = chat.messages.slice(0, index); // ends at the prompting user message
+  const lastUser = [...promptConvo].reverse().find((m) => m.role === "user");
   const replyLang = lastUser ? (lastUser.lang || detectLang(lastUser.content)) : state.lang;
-
-  await runAssistant(chat, tier || state.tier, replyLang);
+  await runAssistant(chat, tier || target.tier || state.tier, replyLang, promptConvo);
 }
 
 /* ----------------------------------------------------------------------------

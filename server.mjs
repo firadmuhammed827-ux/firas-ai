@@ -1904,15 +1904,18 @@ function handleVersion(req, res) {
 
 // ── Max engine: Claude (Anthropic Messages API → our SSE) ───────────────────
 // ── Max engine: Gemini (OpenAI-compatible, FREE Flash tier) ──────────────────
-// Tries each id in GEMINI_TEXT_MODELS until one streams. Returns true if it streamed
-// any bytes, false if every candidate failed before any content (so the caller falls
-// back to the next engine). Does NOT send terminal [DONE] — handleChat's finally does.
-async function streamGemini(res, messages, signal) {
-  if (!GEMINI_API_KEY) return false;
-  const msgs = messages
-    .filter((m) => m.role === "system" || m.role === "user" || m.role === "assistant")
-    .map((m) => ({ role: m.role, content: String(m.content || "") }));
-  if (!msgs.length) return false;
+// Sniff an image mime from the base64 signature (for the data-URL Gemini expects).
+function b64Mime(b64) {
+  const s = String(b64 || "");
+  if (s.startsWith("/9j/")) return "image/jpeg";
+  if (s.startsWith("iVBOR")) return "image/png";
+  if (s.startsWith("R0lGOD")) return "image/gif";
+  if (s.startsWith("UklGR")) return "image/webp";
+  return "image/jpeg";
+}
+// Stream a prebuilt OpenAI-format messages array through the Gemini OpenAI-compat endpoint,
+// trying each candidate model id. Returns true if any bytes streamed. Shared by text + vision.
+async function _geminiStream(res, msgs, signal, label) {
   for (const model of GEMINI_TEXT_MODELS) {
     if (res.writableEnded) return true;
     const body = JSON.stringify({ model, messages: msgs, stream: true });
@@ -1925,7 +1928,7 @@ async function streamGemini(res, messages, signal) {
       });
     } catch (e) { if (signal.aborted) return true; continue; }
     if (!upstream.ok || !upstream.body) {
-      console.error("[firas] Max→Gemini (" + model + ") HTTP " + (upstream && upstream.status) + " — trying next");
+      console.error("[firas] " + (label || "Gemini") + " (" + model + ") HTTP " + (upstream && upstream.status) + " — trying next");
       try { upstream && upstream.body && upstream.body.cancel(); } catch (_) {}
       continue;
     }
@@ -1947,11 +1950,42 @@ async function streamGemini(res, messages, signal) {
           if (delta && delta.content) { sseWrite(res, delta.content); any = true; }
         }
       }
-      if (any) { console.log("[firas] Max served by Gemini (" + model + ")"); return true; }
-      // 200 but no content → try the next candidate id
+      if (any) { console.log("[firas] served by " + (label || "Gemini") + " (" + model + ")"); return true; }
     } catch (e) { return signal.aborted ? true : any; }
   }
   return false;
+}
+// Text: Max-tier first engine. Returns true if it streamed any bytes.
+async function streamGemini(res, messages, signal) {
+  if (!GEMINI_API_KEY) return false;
+  const msgs = messages
+    .filter((m) => m.role === "system" || m.role === "user" || m.role === "assistant")
+    .map((m) => ({ role: m.role, content: String(m.content || "") }));
+  if (!msgs.length) return false;
+  return _geminiStream(res, msgs, signal, "Max→Gemini");
+}
+// VISION: a strong, cloud, multimodal model (works on the deployed site, no local GPU). Sends
+// the attached image(s) as data-URL image_url parts. Tried BEFORE the local Ollama vision model.
+async function streamGeminiVision(res, messages, signal) {
+  if (!GEMINI_API_KEY) return false;
+  let budget = MAX_IMAGES_PER_REQUEST;
+  const msgs = messages
+    .filter((m) => m.role === "system" || m.role === "user" || m.role === "assistant")
+    .map((m) => {
+      const text = String((m && m.content) || "");
+      if (m && m.role === "user" && Array.isArray(m.images) && m.images.length && budget > 0) {
+        const parts = text ? [{ type: "text", text }] : [];
+        for (const raw of m.images) {
+          if (budget <= 0) break;
+          const norm = normalizeImage(raw);
+          if (norm) { parts.push({ type: "image_url", image_url: { url: "data:" + b64Mime(norm) + ";base64," + norm } }); budget--; }
+        }
+        if (parts.length) return { role: m.role, content: parts };
+      }
+      return { role: m.role, content: text };
+    });
+  if (!msgs.length) return false;
+  return _geminiStream(res, msgs, signal, "Vision→Gemini");
 }
 
 // Returns true if it streamed any answer, false if it failed BEFORE any bytes
@@ -2358,10 +2392,16 @@ async function handleChat(req, res) {
 
   try {
     let served = false;
+    // VISION → a strong CLOUD multimodal model FIRST (Gemini Flash): much better than the local
+    // qwen2.5vl, and it works on the deployed site with NO local GPU. Falls back to local Ollama
+    // vision only if Gemini isn't configured or fails before any bytes.
+    if (vision && GEMINI_API_KEY) {
+      served = await streamGeminiVision(res, messages, ac.signal);
+    }
     // Max tier → premium external engines FIRST: Gemini Flash (free) → Claude Sonnet
     // (paid) → OpenRouter free (Nemotron). Each returns false if it failed before any
     // bytes, so the chain degrades cleanly to the next engine.
-    if (tier === "max" && !vision) {
+    if (tier === "max" && !vision && !served) {
       served = await streamGemini(res, messages, ac.signal);
       if (!served && !res.writableEnded) served = await streamAnthropic(res, messages, ac.signal);
       if (!served && !res.writableEnded) served = await streamOpenRouter(res, messages, ac.signal);

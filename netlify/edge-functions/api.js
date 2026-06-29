@@ -546,9 +546,14 @@ function chatStreamResponse(messages, tier, think, vision) {
       const finish = () => { if (closed) return; closed = true; try { controller.enqueue(te.encode("data: [DONE]\n\n")); } catch (_) {} try { controller.close(); } catch (_) {} clearTimeout(timeout); };
       try {
         let served = false;
+        // VISION → strong CLOUD multimodal model FIRST (Gemini). On the deployed site there is no
+        // local GPU, so this is the primary image reader; Ollama-cloud vision is the fallback.
+        if (vision && GEMINI_API_KEY) {
+          served = await streamGeminiVisionInto(enc, messages, ac.signal);
+        }
         // Max tier → premium external engines FIRST: Claude Sonnet (paid), then
         // OpenRouter free (DeepSeek-R1) when Claude has no credit/fails.
-        if (tier === "max" && !vision) {
+        if (tier === "max" && !vision && !served) {
           served = await streamGeminiInto(enc, messages, ac.signal);
           if (!served && !closed) served = await streamAnthropicInto(enc, messages, ac.signal);
           if (!served && !closed) served = await streamOpenRouterInto(enc, messages, ac.signal);
@@ -711,6 +716,62 @@ async function streamGeminiInto(enc, messages, signal) {
         }
       }
       if (any) return true;   // served by this id; otherwise try the next candidate
+    } catch (e) { return signal.aborted ? true : any; }
+  }
+  return false;
+}
+
+function b64Mime(b64) {
+  const s = String(b64 || "");
+  if (s.startsWith("/9j/")) return "image/jpeg";
+  if (s.startsWith("iVBOR")) return "image/png";
+  if (s.startsWith("R0lGOD")) return "image/gif";
+  if (s.startsWith("UklGR")) return "image/webp";
+  return "image/jpeg";
+}
+// VISION via Gemini (strong, cloud, multimodal) — the deployed site has no local GPU, so this
+// is the primary image reader. Sends image(s) as data-URL image_url parts.
+async function streamGeminiVisionInto(enc, messages, signal) {
+  if (!GEMINI_API_KEY) return false;
+  let budget = MAX_IMAGES_PER_REQUEST;
+  const msgs = messages.filter((m) => m.role === "system" || m.role === "user" || m.role === "assistant").map((m) => {
+    const text = String((m && m.content) || "");
+    if (m && m.role === "user" && Array.isArray(m.images) && m.images.length && budget > 0) {
+      const parts = text ? [{ type: "text", text }] : [];
+      for (const raw of m.images) {
+        if (budget <= 0) break;
+        const norm = normalizeImage(raw);
+        if (norm) { parts.push({ type: "image_url", image_url: { url: "data:" + b64Mime(norm) + ";base64," + norm } }); budget--; }
+      }
+      if (parts.length) return { role: m.role, content: parts };
+    }
+    return { role: m.role, content: text };
+  });
+  if (!msgs.length) return false;
+  for (const model of GEMINI_TEXT_MODELS) {
+    const reqBody = JSON.stringify({ model, messages: msgs, stream: true });
+    let upstream;
+    try { upstream = await fetch(GEMINI_OAI_URL, { method: "POST", headers: { "content-type": "application/json", "Authorization": "Bearer " + GEMINI_API_KEY }, body: reqBody, signal }); }
+    catch (e) { if (signal.aborted) return true; continue; }
+    if (!upstream.ok || !upstream.body) { try { upstream && upstream.body && upstream.body.cancel(); } catch (_) {} continue; }
+    const reader = upstream.body.getReader(); let buffer = "", any = false;
+    try {
+      while (true) {
+        const { done, value } = await reader.read(); if (done) break;
+        buffer += td.decode(value, { stream: true });
+        let nl;
+        while ((nl = buffer.indexOf("\n")) !== -1) {
+          let line = buffer.slice(0, nl); buffer = buffer.slice(nl + 1);
+          if (line.endsWith("\r")) line = line.slice(0, -1);
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          let evt; try { evt = JSON.parse(payload); } catch { continue; }
+          const delta = evt.choices && evt.choices[0] && evt.choices[0].delta;
+          if (delta && delta.content) { const f = sseFrame(delta.content); if (f) enc(f); any = true; }
+        }
+      }
+      if (any) return true;
     } catch (e) { return signal.aborted ? true : any; }
   }
   return false;
