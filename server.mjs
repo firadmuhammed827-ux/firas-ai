@@ -746,7 +746,7 @@ async function handleVerifySignup(req, res) {
     p.verified = true; p.userId = user.id; p.verifiedAt = Date.now();
     await persist();
     // personal welcome from Firas (fire-and-forget — never block sign-in on email)
-    sendEmail(user.email, "أهلاً بك في Firas AI 🎉", welcomeEmailHtml(user.name, resetAppBase(req) + "/"), { fromName: "فراس" }).catch(() => {});
+    sendEmail(user.email, "Welcome to Firas AI 🎉", welcomeEmailHtml(user.name, resetAppBase(req) + "/"), { fromName: "Firas" }).catch(() => {});
   }
   if (!user) return sendJson(res, 400, { error: "تعذّر التأكيد — أعد التسجيل" });
   setSessionCookie(res, user.id, req);
@@ -852,8 +852,8 @@ const BREVO_FROM_NAME = process.env.BREVO_FROM_NAME || "Firas AI";
 const RESET_APP_URL  = (process.env.APP_URL || "").replace(/\/+$/, "");
 const RESET_TTL_MS   = 30 * 60_000;
 const VERIFY_TTL_MS  = 15 * 60_000; // signup email-verification code lifetime
-function fmtNow() {
-  try { return new Date().toLocaleString("ar", { dateStyle: "long", timeStyle: "short" }); }
+function fmtNow(loc) {
+  try { return new Date().toLocaleString(loc || "ar", { dateStyle: "long", timeStyle: "short" }); }
   catch (_) { return new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC"; }
 }
 // DARK, bold, professional, email-client-safe template (table layout + inline styles + RTL).
@@ -878,10 +878,14 @@ function brandedEmail(o) {
   const bg = "#262624", card = "#30302E", border = "#46453F", hair = "#3A3A36",
         ink = "#F6F4ED", body = "#DBD8CF", muted = "#C2BFB6", soft = "#8C8A81", accent = "#57AE9C", accent2 = "#6BC0AE", onacc = "#10221D";
   const font = EMAIL_FONT;
-  const time = o.time || fmtNow();
+  const isEn = o.lang === "en";
+  const cdir = isEn ? "ltr" : "rtl", calign = isEn ? "left" : "right";
+  const time = o.time || fmtNow(isEn ? "en" : "ar");
+  const sentLabel = isEn ? "Sent: " : "أُرسلت في: ";
+  const tagline = isEn ? "Your intelligent assistant · Automated message, no need to reply." : "مساعدك الذكي · رسالة آلية، لا داعي للرد عليها.";
   const pageBg = "background:radial-gradient(60% 50% at 100% 0%,rgba(87,174,156,0.22),transparent 70%),radial-gradient(60% 50% at 0% 100%,rgba(87,174,156,0.17),transparent 70%)," + bg + ";";
   const cardGlow = "box-shadow:0 0 0 1px rgba(87,174,156,0.12),28px -28px 100px -16px rgba(87,174,156,0.24),-28px 28px 100px -16px rgba(87,174,156,0.20),0 28px 64px rgba(0,0,0,0.55);";
-  return '<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8">' +
+  return '<!doctype html><html dir="' + cdir + '" lang="' + (isEn ? "en" : "ar") + '"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width,initial-scale=1">' +
     '<meta name="color-scheme" content="dark"><meta name="supported-color-schemes" content="dark">' +
     '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' +
@@ -896,18 +900,18 @@ function brandedEmail(o) {
       '<td style="width:48px;height:48px;border-radius:14px;background:' + accent + ';text-align:center;font-family:' + font + ';font-size:25px;font-weight:800;line-height:48px;color:' + onacc + ';" bgcolor="' + accent + '">F</td>' +
       '<td style="padding-left:13px;font-family:' + font + ';font-size:21px;font-weight:700;line-height:1;letter-spacing:.3px;color:' + ink + ';" dir="ltr">Firas<span style="color:' + accent + ';"> AI</span></td>' +
     '</tr></table></td></tr>' +
-    '<tr><td dir="rtl" style="padding:18px 34px 6px;font-family:' + font + ';color:' + ink + ';text-align:right;">' +
+    '<tr><td dir="' + cdir + '" style="padding:18px 34px 6px;font-family:' + font + ';color:' + ink + ';text-align:' + calign + ';">' +
       '<h1 style="margin:0 0 10px;font-size:23px;font-weight:700;color:' + ink + ';line-height:1.5;">' + o.heading + '</h1>' +
       '<div style="width:40px;height:3px;border-radius:3px;background:' + accent + ';margin:0 0 18px;"></div>' +
       '<p style="margin:0 0 18px;font-size:15.5px;line-height:1.95;color:' + muted + ';">' + o.lead + '</p>' +
       o.contentHtml +
       (o.note ? '<p style="margin:24px 0 0;font-size:13px;line-height:1.8;color:' + soft + ';">' + o.note + '</p>' : '') +
     '</td></tr>' +
-    '<tr><td dir="rtl" style="padding:18px 34px 2px;font-family:' + font + ';font-size:12px;color:' + soft + ';text-align:right;">أُرسلت في: ' + time + '</td></tr>' +
+    '<tr><td dir="' + cdir + '" style="padding:18px 34px 2px;font-family:' + font + ';font-size:12px;color:' + soft + ';text-align:' + calign + ';">' + sentLabel + time + '</td></tr>' +
     '<tr><td style="padding:18px 34px 0;"><div style="border-top:1px solid ' + hair + ';"></div></td></tr>' +
     '<tr><td style="padding:18px 34px 30px;font-family:' + font + ';text-align:center;">' +
       '<p style="margin:0 0 5px;font-family:' + font + ';font-size:13px;font-weight:700;letter-spacing:2px;color:' + accent + ';" dir="ltr">FIRAS AI</p>' +
-      '<p style="margin:0;font-size:12px;color:' + soft + ';" dir="rtl">مساعدك الذكي · رسالة آلية، لا داعي للرد عليها.</p>' +
+      '<p style="margin:0;font-size:12px;color:' + soft + ';" dir="' + cdir + '">' + tagline + '</p>' +
     '</td></tr></table>' +
     '<p style="margin:18px 0 0;font-family:' + font + ';font-size:11px;color:#6b695f;" dir="ltr">© Firas AI</p>' +
     '</td></tr></table></body></html>';
@@ -925,19 +929,22 @@ function sha256hex(s) { return crypto.createHash("sha256").update(String(s)).dig
 function escEmail(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 // Personal welcome from the developer (Firas), sent once the account is verified & created.
 function welcomeEmailHtml(name, link) {
-  const safe = escEmail(String(name || "").trim()) || "صديقي";
+  const safe = escEmail(String(name || "").trim());
+  const first = safe ? safe.split(/\s+/)[0] : "";
   const p = (t) => '<p style="margin:0 0 15px;font-size:15.5px;line-height:2;color:#DBD8CF;">' + t + '</p>';
-  const brand = '<b style="color:#6BC0AE;font-weight:700;">' + ltr("Firas AI") + '</b>';
+  const brand = '<b style="color:#6BC0AE;font-weight:700;">Firas AI</b>';
   const content =
-    p('شكراً لانضمامك إلى ' + brand + ' — حسابك صار جاهزاً ومفعّلاً بالكامل. 🎉') +
-    p('أنا فراس، مطوّر المنصّة. بنيت ' + brand + ' ليكون مساعدك الذكي بالعربية والإنجليزية: محادثة، برمجة، بحث في الإنترنت، توليد صور، وملفات ' + ltr("PDF") + ' — كله مجاناً، وبأربعة نماذج تختار منها حسب حاجتك.') +
-    p('جرّب نموذج <b style="color:#6BC0AE;font-weight:700;">' + ltr("Max") + '</b> الجديد (تجريبي) للأسئلة الصعبة والرياضيات. وإذا واجهت أي مشكلة أو عندك اقتراح، بابي مفتوح دائماً.') +
-    mailButton(link, "ابدأ المحادثة الآن") +
-    '<p style="margin:28px 0 0;font-size:14.5px;line-height:1.85;color:#C2BFB6;">مع خالص التقدير،<br><b style="color:#F6F4ED;font-weight:700;">فراس</b> · مطوّر ' + ltr("Firas AI") + '</p>';
+    p("I'm Firas, founder and developer of " + brand + ". I wanted to personally reach out and thank you for signing up and joining our community. We're truly delighted to have you on board!") +
+    p("We built " + brand + " with the goal of providing the best possible experience — to help you achieve your tasks intelligently and efficiently, and explore the world of AI.") +
+    p("As a new member, you can immediately start exploring the features we've developed specifically for you. We are constantly working to improve and develop the platform.") +
+    p("Once again, thank you for your trust in us. We hope you have a fantastic and productive experience!") +
+    mailButton(link, "Start exploring Firas AI") +
+    '<p style="margin:28px 0 0;font-size:14.5px;line-height:1.85;color:#C2BFB6;">Best regards,<br><b style="color:#F6F4ED;font-weight:700;">Firas</b><br>Founder &amp; Developer, Firas AI</p>';
   return brandedEmail({
-    preheader: "أهلاً بك في Firas AI — رسالة من فراس",
-    heading: "مرحباً بك يا " + bidiAuto(safe) + " 👋",
-    lead: "يسعدني انضمامك إلى عائلة " + ltr("Firas AI") + ". هذي رسالة شخصية مني لك:",
+    lang: "en",
+    preheader: "Welcome to Firas AI — a note from Firas",
+    heading: "Welcome to Firas AI 👋",
+    lead: "Hi " + (first || "there") + ",",
     contentHtml: content,
   });
 }
