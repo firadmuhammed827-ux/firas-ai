@@ -951,8 +951,36 @@ function serializeMessages(messages) {
     turn \[ \] \( \) into [ ] ( ) and eat _ ^ * inside formulas, so KaTeX never
     gets valid input. We stash each span behind a Private-Use-Area placeholder
     (which markdown leaves untouched) and restore it after sanitizing. */
+/** Repair the #1 cause of math rendering as raw red text: UNBALANCED grouping braces
+    (e.g. a stray "}" in "\frac{a}{b}}"). Counts { } that are real grouping (ignores the
+    escaped literals \{ \}); drops any unmatched closing brace and appends any missing closer.
+    Valid LaTeX is already balanced, so this is a no-op for it — it only rescues broken input. */
+function balanceTexBraces(tex) {
+  let depth = 0, out = "";
+  for (let i = 0; i < tex.length; i++) {
+    const c = tex[i];
+    if (c === "{" && tex[i - 1] !== "\\") { depth++; out += c; }
+    else if (c === "}" && tex[i - 1] !== "\\") {
+      if (depth === 0) continue;                 // unmatched closing brace → drop it
+      depth--; out += c;
+    } else out += c;
+  }
+  if (depth > 0) out += "}".repeat(depth);        // unmatched opening braces → close them
+  return out;
+}
+/** Balance braces INSIDE a math token, keeping its $…$ / $$…$$ / \(…\) / \[…\] delimiters intact
+    (so a missing closer is added inside the math, not after the closing delimiter). */
+function balanceMathToken(m) {
+  const pairs = [["$$", "$$"], ["\\[", "\\]"], ["\\(", "\\)"], ["$", "$"]];
+  for (const [l, r] of pairs) {
+    if (m.length >= l.length + r.length && m.startsWith(l) && m.endsWith(r)) {
+      return l + balanceTexBraces(m.slice(l.length, m.length - r.length)) + r;
+    }
+  }
+  return balanceTexBraces(m);
+}
 function protectMath(text, store) {
-  const stash = (m) => { const i = store.length; store.push(m); return "" + i + ""; };
+  const stash = (m) => { const i = store.length; store.push(balanceMathToken(m)); return "" + i + ""; };
   let s = String(text);
   s = s.replace(/\$\$[\s\S]+?\$\$/g, stash);     // display $$ ... $$
   s = s.replace(/\\\[[\s\S]+?\\\]/g, stash);     // display \[ ... \]
@@ -3301,7 +3329,10 @@ function exportCss(th, isAr, scope) {
     dp + "th," + dp + "td{border:1px solid #" + line + ";padding:8px 11px;text-align:start;vertical-align:top}" +
     dp + "th{background:#" + th.accent + ";color:#fff;font-weight:700}" +
     dp + "tr:nth-child(even) td{background:#" + th.zebra + "}" +
-    dp + "img{max-width:100%;page-break-inside:avoid;border-radius:6px}" +
+    // Never cut a table ROW, equation, list item or figure across a page boundary (native print).
+    dp + "tr,td,th{break-inside:avoid;page-break-inside:avoid}" +
+    dp + "li,.katex-display,blockquote,pre,figure{break-inside:avoid}" +
+    dp + "img{max-width:100%;page-break-inside:avoid;break-inside:avoid;border-radius:6px}" +
     dp + ".katex{font-size:1.05em}" +
     dp + ".katex-display{margin:1.15em 0;max-width:100%;overflow:visible;page-break-inside:avoid;direction:ltr;text-align:center}" +
     dp + ".katex{max-width:100%;direction:ltr}" +
