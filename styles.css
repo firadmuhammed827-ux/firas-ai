@@ -476,6 +476,22 @@ h1, h2, h3 { margin: 0; font-family: var(--font-serif); font-weight: var(--weigh
   0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.5); }
   50%      { box-shadow: 0 0 0 5px rgba(139, 92, 246, 0); }
 }
+/* "beta" badge next to Max */
+.tier-switch__btn[data-tier="max"] .tier-beta {
+  display: inline-flex; align-items: center;
+  margin-inline-start: 5px;
+  padding: 1px 5px;
+  font-size: 9px; font-weight: var(--weight-bold);
+  letter-spacing: 0.04em; text-transform: uppercase;
+  line-height: 1.4;
+  color: #a78bfa;
+  background: rgba(139, 92, 246, 0.16);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  border-radius: var(--radius-pill);
+}
+.tier-switch__btn[data-tier="max"].is-active .tier-beta {
+  color: #7c3aed; background: rgba(139, 92, 246, 0.22);
+}
 
 /* Professional "switch" pop on whichever tier was just activated */
 .tier-switch__btn.just-activated { animation: tierPop 0.42s var(--ease-out); }
@@ -1672,6 +1688,7 @@ h1, h2, h3 { margin: 0; font-family: var(--font-serif); font-weight: var(--weigh
 }
 @media (max-width: 440px) {
   .tier-switch__btn .tier-name { display: none; }
+  .tier-switch__btn[data-tier="max"] .tier-beta { display: none; }
   .tier-switch__btn { padding-inline: var(--space-2); }
 }
 

@@ -189,7 +189,7 @@ const STR = {
     landingFeaturesTitle: "لماذا فِراس AI؟",
     landingFeaturesSub: "منصّة ذكاء اصطناعي متكاملة، تتحدّث العربية والإنجليزية بطلاقة — كل ما تحتاجه في مكان واحد.",
     landingFeatures: [
-      { icon: "spark", title: "ثلاثة نماذج ذكية", desc: "اختر بين «مختصر» للسرعة، و«متقدّم» للمهام اليومية، و«أولترا» للأسئلة الصعبة والبرمجة المعقّدة." },
+      { icon: "spark", title: "أربعة نماذج ذكية", desc: "«ميني» للسرعة، و«برو» للمهام اليومية، و«أولترا» للأسئلة الصعبة والبرمجة، و«ماكس» (تجريبي) الأقوى للرياضيات والتحليل العميق." },
       { icon: "code", title: "كتابة الكود مباشرةً", desc: "يكتب صفحات HTML/CSS/JS كاملة داخل نافذة محرّر حيّة، مع معاينة فورية وزر تحميل." },
       { icon: "search", title: "بحث الويب المباشر", desc: "يجلب معلومات حديثة من الإنترنت ويجيبك مع ذكر المصادر القابلة للنقر." },
       { icon: "bulb", title: "وضع التفكير", desc: "تحليل أعمق ودقّة أعلى عند تفعيله — مثالي للأسئلة المعقّدة والمسائل المنطقية." },
@@ -347,7 +347,7 @@ const STR = {
     landingFeaturesTitle: "Why Firas AI?",
     landingFeaturesSub: "A complete AI platform — fluent in Arabic and English, with everything you need in one place.",
     landingFeatures: [
-      { icon: "spark", title: "Three smart models", desc: "Pick “Mini” for speed, “Pro” for everyday tasks, and “Ultra” for the hardest questions and complex coding." },
+      { icon: "spark", title: "Four smart models", desc: "“Mini” for speed, “Pro” for everyday tasks, “Ultra” for hard questions & coding, and “Max” (beta) — the strongest for math & deep analysis." },
       { icon: "code", title: "Writes code live", desc: "Builds complete HTML/CSS/JS pages inside a live editor window, with instant preview and a download button." },
       { icon: "search", title: "Live web search", desc: "Pulls fresh information from the internet and answers with clickable sources." },
       { icon: "bulb", title: "Thinking mode", desc: "Deeper analysis and higher accuracy when enabled — ideal for complex, logical problems." },
@@ -2040,7 +2040,8 @@ function buildTierSwitch() {
     btn.title = m.tagline[state.lang];
     btn.innerHTML =
       `<span class="tier-ico">${TIER_ICON[m.key]}</span>` +
-      `<span class="tier-name" data-short="${m.short[state.lang]}">${m.short[state.lang]}</span>`;
+      `<span class="tier-name" data-short="${m.short[state.lang]}">${m.short[state.lang]}</span>` +
+      (m.key === "max" ? `<span class="tier-beta">beta</span>` : "");
     btn.addEventListener("click", () => setTier(m.key));
     els.tierSwitch.appendChild(btn);
   });
