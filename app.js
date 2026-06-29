@@ -3460,140 +3460,59 @@ async function exportPdf(turn, lang, msg) {
   const { meta } = parseFileMeta(msg && msg.content);
   const mdNode = mdNodeForTurn(turn);
   if (!mdNode || !mdNode.textContent.trim()) { showToast(t().exportEmpty); return; }
+  const isAr = lang === "ar";
+  ensureFileTitle(meta, mdNode);
+  const th = themeFor(meta);
+  const { cover, body } = exportBody(mdNode, lang, meta);
+
+  // NATIVE print-to-PDF. We render the document into the LIVE page (so the app's KaTeX stylesheet
+  // and fonts apply → flawless math AND flawless Arabic shaping on EVERY browser, incl. Safari /
+  // iPad), then ask the browser to print it. The browser produces a real VECTOR PDF instantly —
+  // NO canvas rasterization, so there's no lag/freeze on phones, the text is real & selectable, the
+  // file is tiny, and it costs ZERO server/Netlify. The browser's own "Save as PDF" dialog asks
+  // where to save it on the device. The print sheet is the ONLY thing the user sees of this root.
+  const oldRoot = document.getElementById("firasPrintRoot"); if (oldRoot) oldRoot.remove();
+  const oldStyle = document.getElementById("firasPrintStyle"); if (oldStyle) oldStyle.remove();
+
+  const printRoot = document.createElement("div");
+  printRoot.id = "firasPrintRoot";
+  printRoot.setAttribute("dir", isAr ? "rtl" : "ltr");
+  printRoot.innerHTML = cover + "<div class='doc'>" + body + "</div>";
+  numberListsExplicitly(printRoot.querySelector(".doc"));
+
+  const style = document.createElement("style");
+  style.id = "firasPrintStyle";
+  style.textContent =
+    "#firasPrintRoot{display:none}" +                               // invisible on screen
+    "@media print{" +
+      "@page{size:A4;margin:15mm 14mm}" +
+      "html,body{background:#fff!important;margin:0!important;padding:0!important;height:auto!important;min-height:0!important;overflow:visible!important}" +
+      "body>*:not(#firasPrintRoot){display:none!important}" +       // print ONLY the document
+      "#firasPrintRoot{display:block!important;position:static!important;width:auto!important;max-width:none!important;height:auto!important;overflow:visible!important}" +
+      exportCss(th, isAr, "#firasPrintRoot") +                      // themed typography, cover, KaTeX
+    "}";
+  document.head.appendChild(style);
+  document.body.appendChild(printRoot);
+
   showToast(t().preparing);
-  let root = null;
+  await ensureExportFonts(isAr);                  // professional fonts ready before printing
+  await new Promise((r) => setTimeout(r, 120));   // let fonts + layout settle
+
+  let done = false;
+  const cleanup = () => {
+    if (done) return; done = true;
+    try { printRoot.remove(); } catch (_) {}
+    try { style.remove(); } catch (_) {}
+    window.removeEventListener("afterprint", cleanup);
+  };
+  window.addEventListener("afterprint", cleanup);
+  setTimeout(cleanup, 120000);                    // safety net if afterprint never fires (mobile)
+
   try {
-    await loadScripts(EXPORT_LIBS.pdf);
-    const H2C = window.html2canvas;
-    const JsPDF = window.jspdf && window.jspdf.jsPDF;
-    if (!H2C || !JsPDF) throw new Error("nolib");
-    ensureFileTitle(meta, mdNode);
-    const th = themeFor(meta);
-    const bg = "#" + (th.bg || "FFFFFF");
-    const rgb = hexToRgb(th.accent);
-    const footRgb = hexToRgb(th.ink || "808080");
-    // Build + attach the themed root in-place (styles + KaTeX apply correctly).
-    root = buildExportRoot(mdNode, lang, meta);
-    document.body.appendChild(root);
-    await ensureExportFonts(lang === "ar");       // professional fonts ready before capture
-    await new Promise((r) => setTimeout(r, 220)); // let layout + fonts + KaTeX fully settle (prevents mis-measured breaks)
-
-    const pdf = new JsPDF({ unit: "mm", format: "a4", orientation: "portrait", compress: true });
-    const pageW = 210, pageH = 297, mL = 14, mT = 15, mB = 16;
-    const contentW = pageW - mL - 14;           // 182mm text column
-    const contentH = pageH - mT - mB;           // 266mm text height
-    // FIXED crisp scale (~230 DPI). The document is captured below in SAFE-SIZED CHUNKS, so no
-    // single canvas ever approaches the browser's max canvas size (Safari/desktop ~16k px, where
-    // one giant capture silently BLANKS or HANGS) — quality stays high at ANY document length, and
-    // the page never freezes (we yield between chunks).
-    const scale = 2.4;
-    const SAFE_CANVAS_PX = 11000;                  // keep every capture's canvas height under this
-    const toJpeg = (c) => c.toDataURL("image/jpeg", 0.95);
-    let pageStarted = false;
-
-    // ---- Cover: full-bleed page 1 ----
-    const coverEl = root.querySelector(".cover");
-    if (coverEl) {
-      const cc = await H2C(coverEl, { scale, backgroundColor: "#" + th.deep, windowWidth: 794, logging: false, useCORS: true });
-      pdf.addImage(toJpeg(cc), "JPEG", 0, 0, pageW, pageH, undefined, "FAST");
-      cc.width = cc.height = 0;                     // free the canvas immediately
-      pageStarted = true;
-    }
-
-    // ---- Content: capture in chunks of a few pages, paginate each at block boundaries ----
-    const docEl = root.querySelector(".doc");
-    const docW = docEl.getBoundingClientRect().width || 794;
-    const cssPerMm = docW / contentW;
-    const pageCssH = contentH * cssPerMm;          // one A4 content page, in CSS px
-    const chunkCssCap = Math.max(pageCssH, Math.floor((SAFE_CANVAS_PX / scale) * 0.8)); // headroom for margins/padding
-    // Group top-level blocks into chunks that fit a safe canvas (each block kept whole).
-    const chunks = [];
-    let curBlocks = [], curH = 0;
-    for (const b of docEl.children) {
-      const h = b.getBoundingClientRect().height || 0;
-      if (curBlocks.length && curH + h > chunkCssCap) { chunks.push({ blocks: curBlocks, h: curH }); curBlocks = []; curH = 0; }
-      curBlocks.push(b); curH += h;
-    }
-    if (curBlocks.length) chunks.push({ blocks: curBlocks, h: curH });
-    const buildingMsg = lang === "ar" ? "جاري إنشاء PDF… " : "Building PDF… ";
-
-    for (let ci = 0; ci < chunks.length; ci++) {
-      // progress + yield → the browser stays responsive (never freezes) and shows movement
-      showToast(buildingMsg + Math.round((ci / chunks.length) * 100) + "%");
-      await new Promise((r) => setTimeout(r, 0));
-      // Clone just this chunk into a .doc INSIDE root (so the scoped export CSS + rendered KaTeX apply).
-      const holder = document.createElement("div");
-      holder.style.cssText = "position:absolute;left:0;top:0;width:" + docW + "px;";
-      const docClone = document.createElement("div");
-      docClone.className = "doc";
-      docClone.style.width = docW + "px";
-      for (const b of chunks[ci].blocks) docClone.appendChild(b.cloneNode(true));
-      holder.appendChild(docClone);
-      root.appendChild(holder);
-      // Per-chunk scale clamp uses the clone's ACTUAL rendered height (incl. margins/padding the
-      // estimate missed) so the canvas is GUARANTEED within the safe size, even if a block is huge.
-      const realH = docClone.scrollHeight || chunks[ci].h;
-      const chScale = Math.min(scale, SAFE_CANVAS_PX / Math.max(1, realH));
-      const dc = await H2C(docClone, { scale: chScale, backgroundColor: bg, windowWidth: 794, logging: false, useCORS: true });
-      // Break candidates WITHIN this chunk (clone still in the DOM so rects are valid).
-      const dTop = docClone.getBoundingClientRect().top;
-      const headings = new Set(docClone.querySelectorAll("h1, h2, h3, h4, h5, h6"));
-      const blockEls = new Set([
-        ...docClone.querySelectorAll(":scope > *"),
-        ...docClone.querySelectorAll(".katex-display, table, img, pre, blockquote, figure, p, li"),
-      ]);
-      const raw = [];
-      // Non-heading blocks: break AFTER (bottom). Headings: break BEFORE (top) so a heading
-      // never orphans at a page bottom — it travels to the next page WITH its content.
-      for (const el of blockEls) { if (!headings.has(el)) raw.push((el.getBoundingClientRect().bottom - dTop) * chScale); }
-      for (const el of headings) { raw.push((el.getBoundingClientRect().top - dTop) * chScale); }
-      holder.remove();                              // done measuring → detach (frees layout)
-      const pxPerMm = dc.width / contentW;
-      const pageHpx = Math.floor(contentH * pxPerMm);
-      const bounds = raw.map((b) => Math.round(b)).filter((b) => b > 0).sort((a, b) => a - b);
-      const MIN_FILL = pageHpx * 0.12;              // allow an early break to push a tall block down
-      let start = 0;
-      while (start < dc.height - 1) {
-        const maxEnd = Math.min(start + pageHpx, dc.height);
-        let end = maxEnd;
-        if (end < dc.height) {
-          // largest block boundary that fits → clean break, no split. If none fits, a single
-          // block is taller than a page → forced split at maxEnd (unavoidable).
-          let cut = 0;
-          for (const b of bounds) { if (b > start + MIN_FILL && b <= maxEnd) cut = b; }
-          if (cut > start) end = cut;
-        }
-        const sliceH = Math.max(1, end - start);
-        const tmp = document.createElement("canvas");
-        tmp.width = dc.width; tmp.height = sliceH;
-        const ctx = tmp.getContext("2d");
-        ctx.fillStyle = bg; ctx.fillRect(0, 0, tmp.width, tmp.height);
-        ctx.drawImage(dc, 0, start, dc.width, sliceH, 0, 0, dc.width, sliceH);
-        if (pageStarted) pdf.addPage();
-        pageStarted = true;
-        pdf.addImage(toJpeg(tmp), "JPEG", mL, mT, contentW, sliceH / pxPerMm, undefined, "FAST");
-        tmp.width = tmp.height = 0;                 // free the slice canvas
-        start = end;
-      }
-      dc.width = dc.height = 0;                      // free the chunk canvas before the next chunk
-    }
-
-    // ---- Footers with page numbers (skip the cover) ----
-    const total = pdf.internal.getNumberOfPages();
-    const firstContent = coverEl ? 2 : 1;
-    for (let i = firstContent; i <= total; i++) {
-      pdf.setPage(i);
-      pdf.setDrawColor(rgb.r, rgb.g, rgb.b); pdf.setLineWidth(0.3);
-      pdf.line(14, pageH - 10, pageW - 14, pageH - 10);
-      pdf.setFont("helvetica", "normal"); pdf.setFontSize(8);
-      pdf.setTextColor(rgb.r, rgb.g, rgb.b); pdf.text("Firas AI", 14, pageH - 6);
-      pdf.setTextColor(footRgb.r, footRgb.g, footRgb.b); pdf.text(i + " / " + total, pageW - 14, pageH - 6, { align: "right" });
-    }
-    pdf.save(resolveFileName(meta, "pdf"));
+    window.print();                               // browser renders the vector PDF + save dialog
   } catch (_) {
+    cleanup();
     showToast(t().formatUnavailable);
-  } finally {
-    if (root) { try { root.remove(); } catch (_) {} }
   }
 }
 
