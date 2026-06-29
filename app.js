@@ -4857,6 +4857,17 @@ async function extractImageSource(images, userText, lang, signal, onStage) {
   } catch (_) { return ""; }
 }
 
+/* Does an image turn want NEW/derived content generated (make similar/harder questions, solve,
+   rewrite, summarize, build an exam…) vs just reading the image (extract/transcribe/what is this)?
+   Generation must go 2-stage: vision extracts, then the STRONG text model writes the full output —
+   the small vision model truncates long generation. */
+function isImageTransformRequest(s) {
+  const t = String(s || "");
+  const genAr = /(اعمل|اصنع|سوّ?ي|ولّ?د|ولد|انشئ|أنشئ|اكتب\s*لي|اكتبلي|صمّ?م|حلّ?|حل\s|جاوب|أجب|اشرح|لخّ?ص|لخص|أعد\s*صياغة|اعد\s*صياغة|مشاب|مماثل|نفس\s*النمط|بنمط|أصعب|اصعب|أسهل|اسهل|نسخة|أسئلة|اسئلة|مسائل|مسأل|امتحان|اختبار|تمارين|تمرين|سؤال|مثل\s*هذ|زيد|أكثر|اكثر|طوّ?ر|ضاعف)/;
+  const genEn = /\b(make|create|generate|produce|build|design|write|compose|solve|answer|rewrite|paraphrase|summari[sz]e|explain|similar|harder|tougher|easier|more|another|additional|new|version|worksheet|exam|quiz|test|problems?|questions?|exercises?)\b/i;
+  return genAr.test(t) || genEn.test(t);
+}
+
 async function runFileAgentPipeline(convo, fmt, lang, tierKey, signal, onStage) {
   // Files ALWAYS use the general document model (gpt-oss = "pro"), never the coder
   // (Ultra = qwen3-coder) — a coding model turns "make a PDF" into an HTML website.
@@ -5365,14 +5376,44 @@ async function streamAnswer(aiMsg, aiNode, chat) {
       const ov = irabOverride(lastUForIrab.content);
       if (ov) requestMessages = [requestMessages[0], { role: "system", content: ov }, ...requestMessages.slice(1)];
     }
-    // VISION turn → tell the model to answer thoroughly and, when asked to extract/
-    // read text, transcribe ALL of it COMPLETELY and verbatim (not just a summary).
+    // VISION turn. Two paths:
+    //  • CREATE/TRANSFORM (make harder questions, solve, rewrite, summarize…) → 2-STAGE:
+    //    the small vision model EXTRACTS the whole image, then the STRONG text model GENERATES
+    //    the full output (the vision model truncates long generation — the "stopped halfway" bug).
+    //  • Direct question (what is this / extract / read) → let the vision model answer directly.
     const lastUForVision = [...convo].reverse().find((m) => m.role === "user");
-    if (lastUForVision && Array.isArray(lastUForVision.images) && lastUForVision.images.length && !codeReq) {
+    const visImages = lastUForVision && Array.isArray(lastUForVision.images) ? lastUForVision.images : null;
+    if (visImages && visImages.length && !codeReq) {
       const vSys = replyLang === "ar"
         ? "أنت ترى الصورة/الصور المرفقة. إن طُلب منك استخراج أو نسخ أو قراءة النص من الصورة، فاكتب كل النص كاملًا وحرفيًا — كل عنوان وفقرة وسطر ونقطة بالترتيب — دون تلخيص أو اختصار أو توقّف مبكّر، إلى آخر كلمة في الصفحة. وإلا فأجب عن السؤال المتعلّق بالصورة بدقّة وتفصيل."
         : "You can see the attached image(s). If asked to extract, transcribe, or read text from the image, output ALL the text COMPLETELY and verbatim — every heading, paragraph, line and bullet, in order — never summarize, abbreviate, or stop early; continue to the very last word on the page. Otherwise answer the question about the image accurately and in detail.";
-      requestMessages = [requestMessages[0], { role: "system", content: vSys }, ...requestMessages.slice(1)];
+      let did2Stage = false;
+      if (isImageTransformRequest(lastUForVision.content || "")) {
+        const vnode = liveNode(); const vmd = vnode && vnode.querySelector(".msg-ai__body .md");
+        if (vmd) vmd.innerHTML = buildFileLoadingHtml(fileStageText("extract", replyLang));
+        let extracted = "";
+        try { extracted = await extractImageSource(visImages, lastUForVision.content || "", replyLang, signal, null); } catch (_) {}
+        if (signal.aborted) { clearTimeout(timeoutId); return; }
+        if (extracted) {
+          // Strip images so the turn routes to the STRONG text model, and feed it the full
+          // extracted source + a completeness instruction.
+          requestMessages = requestMessages.map((m) => { if (m && m.images) { const { images, ...r } = m; return r; } return m; });
+          for (let i = requestMessages.length - 1; i >= 0; i--) {
+            if (requestMessages[i].role === "user") {
+              requestMessages[i] = { ...requestMessages[i], content: (requestMessages[i].content || "") +
+                (replyLang === "ar" ? "\n\n=== المحتوى الكامل المُستخرَج من الصورة المرفقة (المصدر) ===\n" : "\n\n=== FULL CONTENT EXTRACTED FROM THE ATTACHED IMAGE (source) ===\n") + extracted };
+              break;
+            }
+          }
+          const cmpSys = replyLang === "ar"
+            ? "أرفق المستخدم صورة وطلب إنشاء محتوى منها، وقد استُخرج محتوى الصورة كاملًا ووُضع في رسالته كمصدر. نفّذ الطلب بالكامل اعتمادًا على هذا المصدر: غطِّ كل عنصر وكل سؤال/جزء دون إسقاط أي شيء، وأكمل إلى النهاية دون توقّف مبكّر أو اختصار مهما طال الجواب. اكتب الرياضيات بصيغة LaTeX."
+            : "The user attached an image and asked to create content from it; the image's full content was extracted into their message as the source. Fulfil the request COMPLETELY from that source: cover every item and every question/part, drop nothing, and continue to the very end with no early stop or truncation however long the answer. Write math in LaTeX.";
+          requestMessages = [requestMessages[0], { role: "system", content: cmpSys }, ...requestMessages.slice(1)];
+          if (requestTier === "mini") requestTier = "pro"; // ensure a strong generator
+          did2Stage = true;
+        }
+      }
+      if (!did2Stage) requestMessages = [requestMessages[0], { role: "system", content: vSys }, ...requestMessages.slice(1)];
     }
     // MAX tier → push maximum reasoning depth: decompose, explore approaches, reason
     // rigorously step-by-step, weigh edge-cases, and self-verify before answering.
