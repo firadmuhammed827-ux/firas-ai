@@ -1967,9 +1967,12 @@ function hideLanding() {
 ---------------------------------------------------------------------------- */
 function applyThink() {
   if (els.thinkToggle) {
-    els.thinkToggle.classList.toggle("is-on", state.think);
-    els.thinkToggle.setAttribute("aria-checked", state.think ? "true" : "false");
-    els.thinkToggle.title = state.think ? t().thinkOn : t().thinkOff;
+    // On Max, thinking is disabled — always render the toggle OFF (clicking it shows the
+    // "can't use thinking in Max" message), so the UI matches the actual behavior.
+    const effectiveOn = state.think && state.tier !== "max";
+    els.thinkToggle.classList.toggle("is-on", effectiveOn);
+    els.thinkToggle.setAttribute("aria-checked", effectiveOn ? "true" : "false");
+    els.thinkToggle.title = state.tier === "max" ? t().thinkMaxBlocked : (state.think ? t().thinkOn : t().thinkOff);
   }
   updateToolsBadge();
 }
@@ -2060,6 +2063,7 @@ function setTier(key) {
     }
   });
   applyThinkAvailability();
+  applyThink(); // refresh the toggle's on/off state for the new tier (off on Max)
 }
 /** Hide the Thinking toggle on tiers that don't support it (Mini), so the UI matches
     behavior. It stays visible on Pro/Ultra (works) and Max (shown, but setThink refuses
@@ -6145,13 +6149,19 @@ async function checkVerifyLink() {
   try { token = new URLSearchParams(location.search).get("verify") || ""; } catch (_) {}
   if (!token) return false;
   try { history.replaceState(null, "", location.pathname); } catch (_) {}
+  showAuthScreen(); setAuthMode("login");
   try {
     const d = await apiJson("/api/auth/verify-signup", { method: "POST", body: JSON.stringify({ token }) });
     const user = (d && d.user) || d;
     if (user) { await bootApp(user); return true; }
-  } catch (_) {}
-  // Invalid/expired link → fall through to the auth screen with a note.
-  showAuthScreen(); setAuthMode("login"); showAuthError(t().authVerifyBad);
+  } catch (err) {
+    const st = err && err.status;
+    if (st === 409) showAuthNote(state.lang === "ar" ? "حسابك مُفعّل بالفعل — سجّل الدخول." : "Your account is already active — please sign in.");
+    else if (st === 429) showAuthError(state.lang === "ar" ? "محاولات كثيرة — انتظر دقيقة ثم افتح الرابط مجدداً." : "Too many attempts — wait a minute and reopen the link.");
+    else showAuthError(t().authVerifyBad);
+    return true;
+  }
+  showAuthError(t().authVerifyBad);
   return true;
 }
 

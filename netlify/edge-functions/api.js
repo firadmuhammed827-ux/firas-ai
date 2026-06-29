@@ -299,6 +299,18 @@ async function delPending(ek, rec) {
   if (rec && rec.token) { try { await dbDelete("pendingTok/" + rec.token); } catch (_) {} }
   if (rec && rec.pid) { try { await dbDelete("pendingPid/" + rec.pid); } catch (_) {} }
 }
+// Best-effort client IP for per-client rate-limit keys (Netlify provides x-nf-client-connection-ip).
+function ipOf(request, context) {
+  try {
+    return (context && context.ip) ||
+      request.headers.get("x-nf-client-connection-ip") ||
+      (request.headers.get("x-forwarded-for") || "").split(",")[0].trim() || "?";
+  } catch (_) { return "?"; }
+}
+async function sha256hex(s) {
+  const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(s)));
+  return Array.from(new Uint8Array(b)).map((x) => x.toString(16).padStart(2, "0")).join("");
+}
 async function currentUser(context) {
   if (!SESSION_SECRET) return null;
   const raw = context.cookies.get(COOKIE_NAME);
@@ -918,7 +930,7 @@ export default async (request, context) => {
 
     /* ---- auth ---- */
     if (path === "/api/auth/signup" && method === "POST") {
-      if (rateLimited("auth:signup", 30, 60000)) return json({ error: "too many attempts, please wait a minute" }, 429);
+      if (rateLimited("auth:signup:" + ipOf(request, context), 12, 60000)) return json({ error: "too many attempts, please wait a minute" }, 429);
       let b; try { b = await request.json(); } catch { return json({ error: "invalid JSON body" }, 400); }
       const name = String(b.name ?? "").trim().slice(0, 80);
       const email = String(b.email ?? "").trim().toLowerCase();
@@ -930,6 +942,8 @@ export default async (request, context) => {
       if (await getUserByEmail(email)) return json({ error: "email already registered" }, 409);
       // Don't create the account yet — stash a PENDING signup (Firebase) + email a verify LINK.
       const ek = emailKey(email);
+      const prev = await dbGet("pending/" + ek); // re-signup before verifying → clear old indexes
+      if (prev) await delPending(ek, prev);
       const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
       const pid = crypto.randomUUID().replace(/-/g, "");
       const rec = { name, email, passHash: await hashPassword(password), token, pid, exp: Date.now() + VERIFY_TTL_MS, verified: false, userId: null };
@@ -959,7 +973,7 @@ export default async (request, context) => {
     }
 
     if (path === "/api/auth/verify-signup" && method === "POST") {
-      if (rateLimited("verify", 60, 60000)) return json({ error: "too many requests" }, 429);
+      if (rateLimited("verify:" + ipOf(request, context), 60, 60000)) return json({ error: "too many requests" }, 429);
       let b; try { b = await request.json(); } catch { return json({ error: "invalid JSON" }, 400); }
       const token = String(b.token || "").trim(); if (!token) return json({ error: "رابط غير صالح" }, 400);
       const ek = await dbGet("pendingTok/" + token);
@@ -973,13 +987,16 @@ export default async (request, context) => {
         await saveUser(user);
         rec.verified = true; rec.userId = user.id; rec.verifiedAt = Date.now();
         await dbPut("pending/" + ek, rec);
+        // Consume the token so the link can't be replayed; the pid index stays for the
+        // original device's cross-device poll, which then cleans up the rest.
+        try { await dbDelete("pendingTok/" + token); } catch (_) {}
       }
       if (!user) return json({ error: "تعذّر التأكيد — أعد التسجيل" }, 400);
       await attachSession(context, user.id, request);
       return json({ ok: true, user: publicUser(user) });
     }
     if (path === "/api/auth/verify-status" && method === "POST") {
-      if (rateLimited("vstatus", 120, 60000)) return json({ error: "too many requests" }, 429);
+      if (rateLimited("vstatus:" + ipOf(request, context), 120, 60000)) return json({ error: "too many requests" }, 429);
       let b; try { b = await request.json(); } catch { return json({ error: "invalid JSON" }, 400); }
       const pid = String(b.pid || "").trim(); if (!pid) return json({ error: "missing pid" }, 400);
       const ek = await dbGet("pendingPid/" + pid);
@@ -993,7 +1010,7 @@ export default async (request, context) => {
       return json({ verified: false });
     }
     if (path === "/api/auth/resend-code" && method === "POST") {
-      if (rateLimited("resend", 8, 60000)) return json({ error: "too many requests" }, 429);
+      if (rateLimited("resend:" + ipOf(request, context), 8, 60000)) return json({ error: "too many requests" }, 429);
       let b; try { b = await request.json(); } catch { return json({ error: "invalid JSON" }, 400); }
       const email = String(b.email || "").trim().toLowerCase();
       const ek = emailKey(email);
@@ -1011,14 +1028,14 @@ export default async (request, context) => {
       return json({ ok: true });
     }
     if (path === "/api/auth/forgot" && method === "POST") {
-      if (rateLimited("forgot", 6, 60000)) return json({ error: "too many requests" }, 429);
+      if (rateLimited("forgot:" + ipOf(request, context), 6, 60000)) return json({ error: "too many requests" }, 429);
       let b; try { b = await request.json(); } catch { return json({ error: "invalid JSON" }, 400); }
       const email = String(b.email || "").trim().toLowerCase();
       if (EMAIL_RE.test(email)) {
         const user = await getUserByEmail(email);
         if (user && user.passHash) {
           const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
-          user.reset = { token, exp: Date.now() + RESET_TTL_MS };
+          user.reset = { hash: await sha256hex(token), exp: Date.now() + RESET_TTL_MS }; // store only a hash, never the raw token
           await saveUser(user);
           const link = appBase(request) + "/?reset=" + token + "&uid=" + encodeURIComponent(user.id);
           const sent = await sendEmail(email, "إعادة تعيين كلمة المرور — Firas AI", resetEmailHtml(link));
@@ -1028,13 +1045,13 @@ export default async (request, context) => {
       return json({ ok: true }); // anti-enumeration
     }
     if (path === "/api/auth/reset" && method === "POST") {
-      if (rateLimited("reset", 10, 60000)) return json({ error: "too many requests" }, 429);
+      if (rateLimited("reset:" + ipOf(request, context), 10, 60000)) return json({ error: "too many requests" }, 429);
       let b; try { b = await request.json(); } catch { return json({ error: "invalid JSON" }, 400); }
       const uid = String(b.uid || ""), token = String(b.token || ""), password = String(b.password || "");
       if (password.length < 8) return json({ error: "password must be at least 8 characters" }, 400);
       if (password.length > 200) return json({ error: "password is too long" }, 400);
       const user = await getUserById(uid);
-      if (!user || !user.reset || !user.reset.token || Date.now() > user.reset.exp || user.reset.token !== token) return json({ error: "invalid or expired link" }, 400);
+      if (!user || !user.reset || !user.reset.hash || Date.now() > user.reset.exp || user.reset.hash !== await sha256hex(token)) return json({ error: "invalid or expired link" }, 400);
       user.passHash = await hashPassword(password);
       delete user.reset;
       await saveUser(user);
@@ -1054,7 +1071,7 @@ export default async (request, context) => {
     }
 
     if (path === "/api/auth/firebase" && method === "POST") {
-      if (rateLimited("auth:fb", 30, 60000)) return json({ error: "too many attempts, please wait a minute" }, 429);
+      if (rateLimited("auth:fb:" + ipOf(request, context), 30, 60000)) return json({ error: "too many attempts, please wait a minute" }, 429);
       if (!FIREBASE_PROJECT_ID) return json({ error: "social sign-in not configured" }, 501);
       let b; try { b = await request.json(); } catch { return json({ error: "invalid JSON body" }, 400); }
       let payload = null; try { payload = await verifyFirebaseIdToken(b.idToken); } catch { payload = null; }
