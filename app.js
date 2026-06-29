@@ -1568,6 +1568,7 @@ function typesetMath(node) {
         { left: "$", right: "$", display: false },
       ],
       throwOnError: false,
+      strict: false,                 // be lenient (don't error on unicode/spacing edge-cases)
       ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"],
     });
   } catch (_) { /* KaTeX unavailable or parse issue — leave text as-is */ }
@@ -4881,8 +4882,8 @@ async function runFileAgentPipeline(convo, fmt, lang, tierKey, signal, onStage) 
     const extracted = await extractImageSource(srcImages, userText, lang, signal, onStage);
     if (extracted) {
       userText += (lang === "ar"
-        ? "\n\n[تعليمات: إن طُلبت نسخة «بنفس النمط» أو «مشابهة»، طابِق بنية المصدر تطابقًا تامًّا — نفس عدد الأسئلة وترقيمها وأجزائها الفرعية (A/B/C) وتعليمات الاختيار («اختر ٤ فقط» …) والدرجات والعناوين والترتيب — وغيّر صعوبة المحتوى فقط. أخرِج كل سؤالٍ وكل جزءٍ كاملًا دون نقص.]\n\n=== المحتوى المُستخرَج بالكامل من الصورة/الصور المرفقة (المصدر) ===\n"
-        : "\n\n[Instructions: if a 'same pattern'/'similar' version is requested, MIRROR the source's structure EXACTLY — same number of questions, numbering, sub-parts (A/B/C), selection instructions ('choose 4 only' …), marks, headings and order — change ONLY the difficulty. Output every question and every part in full, dropping nothing.]\n\n=== FULL CONTENT EXTRACTED FROM THE ATTACHED IMAGE(S) (the source) ===\n") + extracted;
+        ? "\n\n[تعليمات صارمة: إن طُلبت نسخة «بنفس النمط» أو «مشابهة»: (1) ابقَ في **نفس مادة المصدر ومواضيعه** — لو المصدر رياضيات فالناتج رياضيات على نفس المواضيع، ويُمنع تحويله لفيزياء أو أي مادة أخرى أو اختراع امتحان مختلف. (2) طابِق بنية المصدر تمامًا — نفس عدد الأسئلة والترقيم والأجزاء (A/B/C) وتعليمات الاختيار («اختر ٤ فقط»…) والدرجات والعناوين والترتيب. (3) غيّر صعوبة المحتوى فقط، وأخرِج كل سؤالٍ وجزءٍ كاملًا دون نقص. اكتب الرياضيات بـ LaTeX صحيح.]\n\n=== المحتوى المُستخرَج بالكامل من الصورة/الصور المرفقة (المصدر) ===\n"
+        : "\n\n[Strict instructions: if a 'same pattern'/'similar' version is requested: (1) stay in the SOURCE'S SAME SUBJECT and topics — if the source is math, the output is math on the same topics; never switch it to physics or any other subject or invent a different exam. (2) Mirror the source structure exactly — same number of questions, numbering, sub-parts (A/B/C), selection instructions ('choose 4 only'…), marks, headings and order. (3) Change ONLY the difficulty, and output every question and part in full, dropping nothing. Write math in valid LaTeX.]\n\n=== FULL CONTENT EXTRACTED FROM THE ATTACHED IMAGE(S) (the source) ===\n") + extracted;
     }
   }
   // BIG-COUNT branch: a request for many items ("1000 integrals/problems/questions…")
@@ -5394,9 +5395,12 @@ async function streamAnswer(aiMsg, aiNode, chat) {
         let extracted = "";
         try { extracted = await extractImageSource(visImages, lastUForVision.content || "", replyLang, signal, null); } catch (_) {}
         if (signal.aborted) { clearTimeout(timeoutId); return; }
+        // Strong rules: SAME SUBJECT (never switch math→physics etc.) + same structure + complete + valid LaTeX.
+        const genSys = replyLang === "ar"
+          ? "أرفق المستخدم صورةً لامتحان/مستند (المصدر) وطلب نسخةً «بنفس النمط» لكن أصعب.\n• **الأهم — نفس المادة والمواضيع:** التزم حرفيًّا بنفس **مادة المصدر** ومواضيعه. إن كان المصدر **رياضيات** (تكامل/تفاضل/معادلات تفاضلية/هندسة تحليلية…) فكل سؤالٍ جديدٍ يجب أن يكون **رياضيات على نفس تلك المواضيع بالضبط** — **يُمنع منعًا باتًّا** تحويله إلى فيزياء أو كيمياء أو أي مادة أخرى، ويُمنع اختراع امتحانٍ مختلفٍ أو مواضيع جديدة. «أصعب» = مسائل أصعب **داخل نفس المادة ونفس المواضيع** فقط.\n• **نفس البنية تمامًا:** نفس عدد الأسئلة وترقيمها، ونفس الأجزاء (A/B/C و(1)(2)…)، ونفس تعليمات الاختيار حرفيًّا («اختر ٤ فقط» / «اختر واحدًا فقط»)، ونفس الدرجات (… M)، ونفس العناوين والترتيب — غيّر صعوبة المحتوى فقط.\n• **كامل:** أخرِج كل سؤالٍ وكل جزءٍ كاملًا — نفس عدد عناصر المصدر — دون حذفٍ أو توقّفٍ مبكّر مهما طال.\n• اكتب الرياضيات بـ LaTeX صحيحٍ يَعرضه KaTeX (استعمل \\cdot و \\text{} للوحدات إن لزم، وتجنّب الأوامر المكسورة مثل \\cdotp الملتصقة). لا تَحلّ الأسئلة ولا تُضِف أقسامًا لم تُطلب."
+          : "The user attached an image of an exam/document (the source) and wants a 'same-pattern' but harder version.\n• **MOST IMPORTANT — SAME SUBJECT & TOPICS:** stay strictly in the source's SUBJECT and topics. If the source is MATH (integration/calculus/differential equations/analytic geometry…), EVERY new question MUST be MATH on those SAME topics — it is STRICTLY FORBIDDEN to switch it to physics, chemistry or any other subject, and forbidden to invent a different exam or new topics. 'Harder' = harder problems WITHIN the same subject and same topics only.\n• **SAME STRUCTURE EXACTLY:** same number of questions and numbering, same sub-parts (A/B/C and (1)(2)…), same selection instructions verbatim ('choose 4 only' / 'choose one only'), same marks (… M), same headings and order — change only the difficulty.\n• **COMPLETE:** output every question and every part in full — the same count as the source — with no dropping or early stop, however long.\n• Write math in clean, valid LaTeX that KaTeX renders (use \\cdot and \\text{} for units if any; avoid broken commands like a glued \\cdotp). Do NOT solve the questions and do NOT add sections that weren't requested.";
         if (extracted) {
-          // Strip images so the turn routes to the STRONG text model, and feed it the full
-          // extracted source + a completeness instruction.
+          // Strip images so the turn routes to the STRONG text model, fed the full extracted source.
           requestMessages = requestMessages.map((m) => { if (m && m.images) { const { images, ...r } = m; return r; } return m; });
           for (let i = requestMessages.length - 1; i >= 0; i--) {
             if (requestMessages[i].role === "user") {
@@ -5405,13 +5409,12 @@ async function streamAnswer(aiMsg, aiNode, chat) {
               break;
             }
           }
-          const cmpSys = replyLang === "ar"
-            ? "أرفق المستخدم صورةً لمستند/امتحان والمحتوى الكامل للمصدر موجودٌ في رسالته. إن طلب «نفس النمط» أو «مشابهة» فأنشئ نسخةً جديدةً **تطابق بنية المصدر تطابقًا تامًّا**: نفس عدد الأسئلة الكلّي، ونفس ترقيمها (سؤال ١، ٢، …)، ونفس الأجزاء الفرعية وحروفها (A/B/C أو أ/ب/ج و(1)(2)…)، ونفس تعليمات الاختيار حرفيًّا (مثل «اختر ٤ فقط» / «اختر واحدًا فقط»)، ونفس الدرجات الموزّعة (… M)، ونفس العناوين والترتيب والتنسيق العام. **لا تُغيّر البنية ولا عدد الأسئلة ولا الأجزاء إطلاقًا** — غيّر **صعوبة محتوى المسائل فقط** (نفس الموضوع لكن أعمق وأصعب). أخرِج **كل** سؤالٍ وكل جزءٍ كاملًا من الأول إلى الآخر — نفس عدد عناصر المصدر تمامًا — دون إسقاطٍ أو حذفٍ أو توقّفٍ مبكّرٍ أو اختصارٍ مهما طال. اكتب الرياضيات بصيغة LaTeX، ولا تَحلّ الأسئلة إلا إذا طُلب ذلك صراحةً. التزم بأوامر المستخدم بدقّة ولا تُضِف أقسامًا أو نصائح لم يطلبها."
-            : "The user attached an image of a document/exam; its full content is in their message as the source. If they asked for the 'same pattern'/'similar', produce a NEW version that MIRRORS the source's structure EXACTLY: same total number of questions, same numbering (Q1, Q2, …), same sub-parts and their labels (A/B/C and (1)(2)…), same selection instructions verbatim (e.g. 'choose 4 only' / 'choose one only'), same mark allocations (… M), same headings, order and overall format. Do NOT change the structure, the number of questions, or the parts — change ONLY the DIFFICULTY of the problems (same topics, deeper and harder). Output EVERY question and EVERY part in full, from first to last — the SAME count as the source — with no dropping, omission, early stop, or summarizing, however long. Write math in LaTeX, and do NOT solve the questions unless explicitly asked. Follow the user's instructions exactly and don't add sections or tips they didn't request.";
-          requestMessages = [requestMessages[0], { role: "system", content: cmpSys }, ...requestMessages.slice(1)];
           if (requestTier === "mini") requestTier = "pro"; // ensure a strong generator
-          did2Stage = true;
         }
+        // (if extraction failed, KEEP the images so the vision model still sees the exam) — either way,
+        // apply the same SUBJECT/STRUCTURE/COMPLETENESS rules.
+        requestMessages = [requestMessages[0], { role: "system", content: genSys }, ...requestMessages.slice(1)];
+        did2Stage = true;
       }
       if (!did2Stage) requestMessages = [requestMessages[0], { role: "system", content: vSys }, ...requestMessages.slice(1)];
     }
