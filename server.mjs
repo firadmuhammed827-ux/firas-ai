@@ -846,54 +846,61 @@ function fmtNow() {
 // DARK, bold, professional, email-client-safe template (table layout + inline styles + RTL).
 // Logo is rendered in-email (CSS) so it shows in ALL clients incl. Gmail — external image
 // files are blocked by most clients until the site is on a real domain.
+// Isolate a Latin/brand run inside RTL Arabic so the sentence doesn't scramble.
+function ltr(s) { return '<span dir="ltr" style="unicode-bidi:isolate;">' + s + '</span>'; }
+function bidiAuto(s) { return '<span dir="auto" style="unicode-bidi:isolate;">' + s + '</span>'; }
+function mailButton(link, label) {
+  return '<table role="presentation" cellpadding="0" cellspacing="0" align="center" style="margin:10px auto 2px;"><tr>' +
+    '<td style="border-radius:11px;background:#57AE9C;box-shadow:0 8px 22px rgba(87,174,156,0.32);" bgcolor="#57AE9C"><a href="' + link + '" style="display:inline-block;padding:14px 34px;font:800 15px \'Segoe UI\',Tahoma,Arial,sans-serif;color:#1F1E1D;text-decoration:none;border-radius:11px;">' + label + '</a></td>' +
+    '</tr></table>';
+}
+function mailLink(link) {
+  return '<p style="margin:18px 0 0;font-size:12px;color:#76746C;" dir="rtl">أو افتح هذا الرابط:<br><span dir="ltr" style="unicode-bidi:isolate;word-break:break-all;"><a href="' + link + '" style="color:#6BC0AE;">' + link + '</a></span></p>';
+}
 function brandedEmail(o) {
-  // Deep dark + a STEADY green glow. bgcolor attrs + color-scheme:dark keep it dark even in
-  // Gmail/Outlook light-mode; the glow is layered (green border + box-shadow + halo ring) so it
-  // still reads as a glow in clients that strip box-shadow.
-  const bg = "#060d0b", card = "#121b18", border = "#2b5950", ink = "#F1EFE8", muted = "#a7b0ab", soft = "#6f7a76", accent = "#2C8A78", accent2 = "#5fc4ae";
+  // Matches the SITE's dark theme EXACTLY (data-theme="dark"): warm charcoal gray + teal accent.
+  // bgcolor attrs + color-scheme:dark keep it dark in light-mode clients. The glow sits in the
+  // TOP-RIGHT and BOTTOM-LEFT corners (page radial gradients + diagonal card box-shadows so it
+  // survives even where background gradients are stripped).
+  const bg = "#262624", card = "#30302E", border = "#46453F", hair = "#3A3A36",
+        ink = "#ECEAE3", muted = "#A6A39A", soft = "#76746C", accent = "#57AE9C", accent2 = "#6BC0AE", onacc = "#1F1E1D";
   const font = "'Segoe UI',Tahoma,Arial,'Helvetica Neue',sans-serif";
   const time = o.time || fmtNow();
-  const glow = "box-shadow:0 0 0 1px rgba(95,196,174,0.20),0 0 60px rgba(44,138,120,0.55),0 0 26px rgba(95,196,174,0.30);";
+  const pageBg = "background:radial-gradient(58% 48% at 100% 0%,rgba(87,174,156,0.20),transparent 70%),radial-gradient(58% 48% at 0% 100%,rgba(87,174,156,0.16),transparent 70%)," + bg + ";";
+  const cardGlow = "box-shadow:0 0 0 1px rgba(87,174,156,0.10),26px -26px 90px -14px rgba(87,174,156,0.22),-26px 26px 90px -14px rgba(87,174,156,0.20),0 26px 60px rgba(0,0,0,0.5);";
   return '<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width,initial-scale=1">' +
     '<meta name="color-scheme" content="dark"><meta name="supported-color-schemes" content="dark"></head>' +
-    '<body bgcolor="' + bg + '" style="margin:0;padding:0;background:' + bg + ';">' +
+    '<body bgcolor="' + bg + '" style="margin:0;padding:0;background:' + bg + ';' + pageBg + '">' +
     '<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:' + bg + ';">' + (o.preheader || "") + '</div>' +
-    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="' + bg + '" style="background:' + bg + ';padding:34px 12px;"><tr><td align="center">' +
-    // glow halo ring (very dark green) around the card — survives box-shadow stripping
-    '<table role="presentation" width="620" cellpadding="0" cellspacing="0" style="max-width:620px;width:100%;"><tr><td style="padding:3px;background:#0c211d;border-radius:22px;' + glow + '">' +
-    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="' + card + '" style="background:' + card + ';border:1px solid ' + border + ';border-radius:19px;overflow:hidden;">' +
-    '<tr><td style="height:4px;background:' + accent + ';font-size:0;line-height:0;">&nbsp;</td></tr>' +
-    '<tr><td style="padding:26px 30px 6px;"><table role="presentation" cellpadding="0" cellspacing="0"><tr>' +
-      '<td style="width:48px;height:48px;border-radius:14px;background:' + accent + ';text-align:center;font:800 25px/48px ' + font + ';color:#ffffff;box-shadow:0 0 20px rgba(44,138,120,0.85);">F</td>' +
-      '<td style="padding-inline-start:13px;font:800 21px/1 ' + font + ';letter-spacing:2px;color:' + ink + ';">FIRAS<span style="color:' + accent2 + ';"> AI</span></td>' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="' + bg + '" style="' + pageBg + 'padding:40px 14px;"><tr><td align="center">' +
+    '<table role="presentation" width="600" cellpadding="0" cellspacing="0" bgcolor="' + card + '" style="max-width:600px;width:100%;background:' + card + ';border:1px solid ' + border + ';border-radius:18px;overflow:hidden;' + cardGlow + '">' +
+    '<tr><td style="height:3px;background:linear-gradient(90deg,' + accent + ',' + accent2 + ');font-size:0;line-height:0;" bgcolor="' + accent + '">&nbsp;</td></tr>' +
+    '<tr><td style="padding:28px 32px 8px;"><table role="presentation" cellpadding="0" cellspacing="0" dir="ltr"><tr>' +
+      '<td style="width:46px;height:46px;border-radius:13px;background:' + accent + ';text-align:center;font:800 24px/46px ' + font + ';color:' + onacc + ';" bgcolor="' + accent + '">F</td>' +
+      '<td style="padding-left:12px;font:700 20px/1 ' + font + ';letter-spacing:.5px;color:' + ink + ';" dir="ltr">Firas<span style="color:' + accent + ';"> AI</span></td>' +
     '</tr></table></td></tr>' +
-    '<tr><td style="padding:18px 30px 6px;font-family:' + font + ';color:' + ink + ';">' +
-      '<h1 style="margin:0 0 12px;font-size:22px;font-weight:800;color:' + ink + ';">' + o.heading + '</h1>' +
-      '<p style="margin:0 0 20px;font-size:15px;line-height:1.85;color:' + muted + ';">' + o.lead + '</p>' +
+    '<tr><td dir="rtl" style="padding:18px 32px 6px;font-family:' + font + ';color:' + ink + ';text-align:right;">' +
+      '<h1 style="margin:0 0 12px;font-size:22px;font-weight:800;color:' + ink + ';line-height:1.45;">' + o.heading + '</h1>' +
+      '<p style="margin:0 0 20px;font-size:15px;line-height:1.9;color:' + muted + ';">' + o.lead + '</p>' +
       o.contentHtml +
-      (o.note ? '<p style="margin:20px 0 0;font-size:13px;line-height:1.7;color:' + muted + ';">' + o.note + '</p>' : '') +
+      (o.note ? '<p style="margin:22px 0 0;font-size:13px;line-height:1.75;color:' + soft + ';">' + o.note + '</p>' : '') +
     '</td></tr>' +
-    '<tr><td style="padding:14px 30px 2px;font-family:' + font + ';font-size:12px;color:' + soft + ';">أُرسلت في: ' + time + '</td></tr>' +
-    '<tr><td style="padding:18px 30px 0;"><div style="border-top:1px solid ' + border + ';"></div></td></tr>' +
-    '<tr><td style="padding:16px 30px 26px;font-family:' + font + ';text-align:center;">' +
-      '<p style="margin:0 0 4px;font-size:13px;font-weight:700;letter-spacing:1px;color:' + accent2 + ';">FIRAS AI</p>' +
-      '<p style="margin:0;font-size:12px;color:' + soft + ';">مساعدك الذكي · رسالة آلية، لا داعي للرد عليها.</p>' +
+    '<tr><td dir="rtl" style="padding:16px 32px 2px;font-family:' + font + ';font-size:12px;color:' + soft + ';text-align:right;">أُرسلت في: ' + time + '</td></tr>' +
+    '<tr><td style="padding:18px 32px 0;"><div style="border-top:1px solid ' + hair + ';"></div></td></tr>' +
+    '<tr><td style="padding:16px 32px 28px;font-family:' + font + ';text-align:center;">' +
+      '<p style="margin:0 0 4px;font:700 13px/1 ' + font + ';letter-spacing:2px;color:' + accent + ';" dir="ltr">FIRAS AI</p>' +
+      '<p style="margin:0;font-size:12px;color:' + soft + ';" dir="rtl">مساعدك الذكي · رسالة آلية، لا داعي للرد عليها.</p>' +
     '</td></tr></table>' +
-    '</td></tr></table>' +
-    '<p style="margin:16px 0 0;font-size:11px;color:#4f5754;font-family:' + font + ';">© Firas AI</p>' +
+    '<p style="margin:16px 0 0;font:400 11px ' + font + ';color:#5c5a53;" dir="ltr">© Firas AI</p>' +
     '</td></tr></table></body></html>';
 }
 function verifyEmailHtml(link) {
-  const btn = '<table role="presentation" cellpadding="0" cellspacing="0" align="center" style="margin:6px auto;"><tr>' +
-    '<td style="border-radius:11px;background:#2C8A78;"><a href="' + link + '" style="display:inline-block;padding:14px 34px;font:800 15px \'Segoe UI\',Tahoma,Arial,sans-serif;color:#06120f;text-decoration:none;border-radius:11px;">تأكيد الحساب وبدء الاستخدام</a></td>' +
-    '</tr></table>' +
-    '<p style="margin:18px 0 0;font-size:12px;color:#6f7a76;word-break:break-all;">أو افتح هذا الرابط:<br><a href="' + link + '" style="color:#57AE9C;">' + link + '</a></p>';
   return brandedEmail({
     preheader: "أكمل إنشاء حسابك في Firas AI",
     heading: "تأكيد بريدك الإلكتروني",
-    lead: "أهلاً بك في Firas AI! اضغط الزر لتأكيد بريدك وتفعيل حسابك — وستدخل مباشرةً.",
-    contentHtml: btn,
+    lead: "أهلاً بك في " + ltr("Firas AI") + " — اضغط الزر لتأكيد بريدك وتفعيل حسابك، وتدخل مباشرةً.",
+    contentHtml: mailButton(link, "تأكيد الحساب وبدء الاستخدام") + mailLink(link),
     note: "الرابط صالح لمدة 15 دقيقة. إذا لم تطلب إنشاء حساب، تجاهل هذه الرسالة.",
   });
 }
@@ -902,20 +909,18 @@ function escEmail(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) 
 // Personal welcome from the developer (Firas), sent once the account is verified & created.
 function welcomeEmailHtml(name, link) {
   const safe = escEmail(String(name || "").trim()) || "صديقي";
-  const p = (t) => '<p style="margin:0 0 14px;font-size:15px;line-height:1.9;color:#cfd6d2;">' + t + '</p>';
-  const btn = '<table role="presentation" cellpadding="0" cellspacing="0" align="center" style="margin:8px auto 2px;"><tr>' +
-    '<td style="border-radius:11px;background:#2C8A78;box-shadow:0 0 22px rgba(44,138,120,0.7);"><a href="' + link + '" style="display:inline-block;padding:14px 34px;font:800 15px \'Segoe UI\',Tahoma,Arial,sans-serif;color:#06120f;text-decoration:none;border-radius:11px;">ابدأ المحادثة الآن</a></td>' +
-    '</tr></table>';
+  const p = (t) => '<p style="margin:0 0 14px;font-size:15px;line-height:1.95;color:#C6C3BA;">' + t + '</p>';
+  const brand = '<b style="color:#6BC0AE;">' + ltr("Firas AI") + '</b>';
   const content =
-    p('شكراً لانضمامك إلى <b style="color:#5fc4ae;">Firas AI</b> — حسابك صار جاهزاً ومفعّلاً بالكامل. 🎉') +
-    p('أنا فراس، مطوّر المنصّة. بنيت Firas AI ليكون مساعدك الذكي بالعربية والإنجليزية: محادثة، برمجة، بحث في الإنترنت، توليد صور، وملفات PDF — كله مجاناً، وبأربعة نماذج تختار منها حسب حاجتك.') +
-    p('جرّب نموذج <b style="color:#5fc4ae;">Max</b> الجديد (تجريبي) للأسئلة الصعبة والرياضيات. وإذا واجهت أي مشكلة أو عندك اقتراح، بابي مفتوح دائماً.') +
-    btn +
-    '<p style="margin:24px 0 0;font-size:14px;line-height:1.8;color:#a7b0ab;">مع خالص التقدير،<br><b style="color:#F1EFE8;">فراس</b> · مطوّر Firas AI</p>';
+    p('شكراً لانضمامك إلى ' + brand + ' — حسابك صار جاهزاً ومفعّلاً بالكامل. 🎉') +
+    p('أنا فراس، مطوّر المنصّة. بنيت ' + brand + ' ليكون مساعدك الذكي بالعربية والإنجليزية: محادثة، برمجة، بحث في الإنترنت، توليد صور، وملفات ' + ltr("PDF") + ' — كله مجاناً، وبأربعة نماذج تختار منها حسب حاجتك.') +
+    p('جرّب نموذج <b style="color:#6BC0AE;">' + ltr("Max") + '</b> الجديد (تجريبي) للأسئلة الصعبة والرياضيات. وإذا واجهت أي مشكلة أو عندك اقتراح، بابي مفتوح دائماً.') +
+    mailButton(link, "ابدأ المحادثة الآن") +
+    '<p style="margin:26px 0 0;font-size:14px;line-height:1.8;color:#A6A39A;">مع خالص التقدير،<br><b style="color:#ECEAE3;">فراس</b> · مطوّر ' + ltr("Firas AI") + '</p>';
   return brandedEmail({
     preheader: "أهلاً بك في Firas AI — رسالة من فراس",
-    heading: "مرحباً بك يا " + safe + " 👋",
-    lead: "يسعدني انضمامك إلى عائلة Firas AI. هذي رسالة شخصية مني لك:",
+    heading: "مرحباً بك يا " + bidiAuto(safe) + " 👋",
+    lead: "يسعدني انضمامك إلى عائلة " + ltr("Firas AI") + ". هذي رسالة شخصية مني لك:",
     contentHtml: content,
   });
 }
@@ -958,15 +963,11 @@ function resetAppBase(req) {
   return "http://" + (req.headers.host || ("localhost:" + PORT));
 }
 function resetEmailHtml(link) {
-  const btn = '<table role="presentation" cellpadding="0" cellspacing="0" align="center" style="margin:6px auto;"><tr>' +
-    '<td style="border-radius:11px;background:#2C8A78;"><a href="' + link + '" style="display:inline-block;padding:14px 32px;font:800 15px \'Segoe UI\',Tahoma,Arial,sans-serif;color:#06120f;text-decoration:none;border-radius:11px;">تعيين كلمة مرور جديدة</a></td>' +
-    '</tr></table>' +
-    '<p style="margin:18px 0 0;font-size:12px;color:#6f7a76;word-break:break-all;">أو افتح هذا الرابط:<br><a href="' + link + '" style="color:#57AE9C;">' + link + '</a></p>';
   return brandedEmail({
     preheader: "رابط إعادة تعيين كلمة المرور — Firas AI",
     heading: "إعادة تعيين كلمة المرور",
     lead: "طلبت إعادة تعيين كلمة مرورك. اضغط الزر للمتابعة:",
-    contentHtml: btn,
+    contentHtml: mailButton(link, "تعيين كلمة مرور جديدة") + mailLink(link),
     note: "الرابط صالح لمدة 30 دقيقة. إذا لم تطلب هذا، تجاهل الرسالة وكلمة مرورك تبقى كما هي.",
   });
 }
