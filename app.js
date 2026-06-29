@@ -6843,6 +6843,8 @@ async function loadFirebase() {
     getAuth: authMod.getAuth,
     GoogleAuthProvider: authMod.GoogleAuthProvider,
     signInWithPopup: authMod.signInWithPopup,
+    signInWithRedirect: authMod.signInWithRedirect,
+    getRedirectResult: authMod.getRedirectResult,
     signInWithEmailAndPassword: authMod.signInWithEmailAndPassword,
     createUserWithEmailAndPassword: authMod.createUserWithEmailAndPassword,
     updateProfile: authMod.updateProfile,
@@ -6877,8 +6879,8 @@ function applyGoogleVisibility() {
   const on = hasFirebaseConfig();
   authEls.google.hidden = !on;
   authEls.divider.hidden = !on;
-  // Warm the SDK in the background so the first click feels instant.
-  if (on) loadFirebase().catch(() => {});
+  // Warm the SDK + auth instance so the popup opens within the click gesture (less likely blocked).
+  if (on) ensureFirebaseAuth().catch(() => {});
 }
 
 /** Map a Firebase popup error to a localized, user-friendly message (or null
@@ -6894,6 +6896,14 @@ function googleErrorMessage(err) {
   return t().authGoogleError;
 }
 
+/** Exchange a Firebase sign-in result for our own session (idToken → /api/auth/firebase). */
+async function completeFirebaseSignIn(result) {
+  const idToken = await result.user.getIdToken();
+  const data = await apiJson("/api/auth/firebase", { method: "POST", body: JSON.stringify({ idToken }) });
+  const user = (data && data.user) || data || {};
+  await bootApp(user);
+}
+const LS_GOOGLE_REDIRECT = "firas_google_redirect";
 async function handleGoogleSignIn() {
   if (!hasFirebaseConfig() || authEls.google.disabled) return;
   hideAuthError();
@@ -6902,20 +6912,27 @@ async function handleGoogleSignIn() {
   try {
     const m = await loadFirebase();
     const auth = await ensureFirebaseAuth();
-    const result = await m.signInWithPopup(auth, new m.GoogleAuthProvider());
-    const idToken = await result.user.getIdToken();
-    const data = await apiJson("/api/auth/firebase", {
-      method: "POST",
-      body: JSON.stringify({ idToken }),
-    });
-    const user = (data && data.user) || data || {};
-    await bootApp(user);
+    let result;
+    try {
+      result = await m.signInWithPopup(auth, new m.GoogleAuthProvider());
+    } catch (err) {
+      const code = err && err.code;
+      if (code === "auth/popup-closed-by-user" || code === "auth/user-cancelled") return; // user dismissed
+      // Popup blocked/unsupported (very common on mobile, and when the SDK finished loading
+      // after the click) → fall back to a full-page REDIRECT, which browsers never block.
+      if (code === "auth/popup-blocked" || code === "auth/cancelled-popup-request" ||
+          code === "auth/operation-not-supported-in-this-environment") {
+        try { localStorage.setItem(LS_GOOGLE_REDIRECT, "1"); } catch (_) {}
+        await m.signInWithRedirect(auth, new m.GoogleAuthProvider());
+        return; // page navigates to Google; getRedirectResult() finishes on return
+      }
+      throw err;
+    }
+    await completeFirebaseSignIn(result);
   } catch (err) {
-    // Server-side failures (401 invalid, 501 not configured) carry an HTTP status.
     if (err && typeof err.status === "number") {
       showAuthError((err.data && (err.data.message || err.data.error)) || t().authGoogleError);
     } else {
-      // Otherwise it's a Firebase/popup error — possibly a quiet cancellation.
       const msg = googleErrorMessage(err);
       if (msg) showAuthError(msg);
     }
@@ -6923,6 +6940,27 @@ async function handleGoogleSignIn() {
     authEls.google.disabled = false;
     authEls.google.classList.remove("is-loading");
   }
+}
+/** On load, finish a Google sign-in that used the REDIRECT fallback. */
+async function checkGoogleRedirect() {
+  if (!hasFirebaseConfig()) return false;
+  let pending = false;
+  try { pending = localStorage.getItem(LS_GOOGLE_REDIRECT) === "1"; } catch (_) {}
+  if (!pending) return false;
+  try { localStorage.removeItem(LS_GOOGLE_REDIRECT); } catch (_) {}
+  try {
+    const m = await loadFirebase();
+    const auth = await ensureFirebaseAuth();
+    const result = await m.getRedirectResult(auth);
+    if (result && result.user) { await completeFirebaseSignIn(result); return true; }
+  } catch (err) {
+    showAuthScreen();
+    const msg = (err && typeof err.status === "number")
+      ? ((err.data && (err.data.message || err.data.error)) || t().authGoogleError)
+      : googleErrorMessage(err);
+    if (msg) showAuthError(msg);
+  }
+  return false;
 }
 
 function wireAuth() {
@@ -7116,6 +7154,7 @@ async function init() {
   // takes over the screen before the auth gate.
   if (await checkVerifyLink()) return;
   if (checkResetLink()) return;
+  if (await checkGoogleRedirect()) return;   // finish a Google sign-in that used the redirect fallback
 
   // Auth gate: ask the server who we are. A valid session skips the landing and
   // goes straight to the app; a logged-out visitor sees the polished landing
