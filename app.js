@@ -4504,6 +4504,7 @@ function metaBlockString(meta) {
 }
 function fileStageText(stage, lang) {
   const ar = lang === "ar";
+  if (stage === "extract") return ar ? "يقرأ الصورة ويستخرج كل المحتوى…" : "Reading the image & extracting everything…";
   if (stage === "plan") return ar ? "يخطّط لهيكل الملف…" : "Planning the file…";
   if (stage === "content") return ar ? "يكتب المحتوى…" : "Writing the content…";
   if (stage === "assemble" || !stage) return ar ? "يجمّع ويُخرج باحتراف…" : "Assembling & polishing…";
@@ -4837,12 +4838,42 @@ async function continueCode(card) {
 }
 
 /** Planner + Author + Finisher → the final document string (metadata block + content). */
+/* Stage 0 for image-based docs: route the attached image(s) to the VISION model and
+   transcribe EVERYTHING on them — every problem/question/line, to the very last one — so the
+   document author works from the complete source, not just the prompt text. Returns "" on
+   failure (the pipeline then proceeds with the text request alone). */
+async function extractImageSource(images, userText, lang, signal, onStage) {
+  if (!Array.isArray(images) || !images.length) return "";
+  if (onStage) onStage("extract");
+  const ar = lang === "ar";
+  const sys = ar
+    ? "أنت محرّك رؤية دقيق. مهمتك: انسخ **كل** ما في الصورة/الصور المرفقة نسخًا كاملًا وحرفيًّا — كل عنوان، وكل سؤال/مسألة بكامل نصّه ورقمه وفروعه ودرجاته، وكل معادلة ورمز رياضي (اكتب الرياضيات بـ LaTeX)، وكل جدول وسطر ونقطة — بالترتيب نفسه ومن الأولى إلى الأخيرة. لا تلخّص، لا تختصر، لا تشرح، لا تحلّ، ولا تتوقّف مبكّرًا أبدًا. إن وُجدت N مسألة فأخرِجها كلّها N. أعطِ النص المستخرَج فقط."
+    : "You are a precise vision OCR engine. Transcribe EVERYTHING in the attached image(s) COMPLETELY and verbatim — every heading, every question/problem with its full text, number, sub-parts and marks, every equation and math symbol (write math in LaTeX), every table, line and bullet — in order, from the first to the very last. Do NOT summarize, abbreviate, explain, solve, or stop early. If there are N problems, output all N. Output ONLY the transcribed content.";
+  const usr = (ar ? "استخرج كل محتوى الصورة/الصور بالكامل (هذا مصدر سيُبنى عليه طلب المستخدم: " : "Transcribe ALL content of the image(s) in full (this is the source for the user's request: ")
+    + String(userText || "").slice(0, 300) + ").";
+  try {
+    const out = await callAgentText([{ role: "system", content: sys }, { role: "user", content: usr, images }], "pro", signal);
+    return (out && out.trim()) ? out.trim() : "";
+  } catch (_) { return ""; }
+}
+
 async function runFileAgentPipeline(convo, fmt, lang, tierKey, signal, onStage) {
   // Files ALWAYS use the general document model (gpt-oss = "pro"), never the coder
   // (Ultra = qwen3-coder) — a coding model turns "make a PDF" into an HTML website.
   tierKey = "pro";
   const lastUser = [...convo].reverse().find((m) => m.role === "user");
-  const userText = lastUser ? lastUser.content : "";
+  let userText = lastUser ? lastUser.content : "";
+  // If the user attached image(s), extract their FULL content first and append it as the
+  // source material so e.g. "make a harder version of this exam" sees the whole exam.
+  const srcImages = lastUser && Array.isArray(lastUser.images) ? lastUser.images : null;
+  if (srcImages && srcImages.length) {
+    const extracted = await extractImageSource(srcImages, userText, lang, signal, onStage);
+    if (extracted) {
+      userText += (lang === "ar"
+        ? "\n\n=== المحتوى المُستخرَج بالكامل من الصورة/الصور المرفقة (المصدر — استخدمه كاملًا ولا تُسقِط أي عنصر) ===\n"
+        : "\n\n=== FULL CONTENT EXTRACTED FROM THE ATTACHED IMAGE(S) (the source — use ALL of it, drop nothing) ===\n") + extracted;
+    }
+  }
   // BIG-COUNT branch: a request for many items ("1000 integrals/problems/questions…")
   // would truncate in a single author call → generate it in parallel BATCHES instead.
   const cm = userText.match(/(\d[\d,]{1,5})\s*\+?\s*(?:integrals?|problems?|questions?|exercises?|equations?|items?|mcqs?|تكاملات?|مسائل|مسأل[ةه]?|أسئلة|سؤال|تمارين|تمرين|انتيكرل|انتقرل|معادلات?|معادلة)/i);
