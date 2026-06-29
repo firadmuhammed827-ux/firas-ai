@@ -4007,6 +4007,15 @@ const MAX_EDGE = 1568;       // longest edge sent to the vision model
 const THUMB_EDGE = 256;      // tiny thumb persisted to history
 let pendingImages = [];
 let readingImages = 0;       // >0 while ANY attachment (image/doc) is being processed (disables send)
+// Remember each chat's last attached image so a follow-up ("now make them harder", "translate
+// it", "extract more") can reuse it WITHOUT re-sending. In-memory only (not persisted).
+const lastImagesByChat = new Map();
+// Does this follow-up text refer to a previously-attached image/its content?
+function refersToPriorImage(s) {
+  const t = String(s || "");
+  if (isImageTransformRequest(t)) return true;
+  return /الصور|صورة|الملف|المرفق|المرفقة|منها|فيها|الأسئلة|نفس(ها)?|بنفس|image|file|attachment|extract|estract|the questions|them|it/i.test(t);
+}
 
 /* ---- Document attachments (PDF / code / text) — read to text, sent as context ---- */
 let pendingFiles = [];       // [{ id, name, kind:'pdf'|'code', text, loading }]
@@ -4257,8 +4266,12 @@ function buildMessages(tier, conversation, replyLang) {
     " Always reply in the SAME language as the user's most recent message " +
     "(Arabic→Arabic, English→English). Never switch languages on your own.";
   const mathRule =
-    " For ANY mathematics, physics or scientific notation, ALWAYS format it as LaTeX: " +
+    " For ANY mathematics, physics, chemistry or scientific notation, ALWAYS format it as LaTeX: " +
     "inline math as $...$ and display math as $$...$$ — never write raw unformatted formulas. " +
+    "Use ONLY valid, KaTeX-renderable LaTeX: correct commands (\\frac, \\sqrt, \\int, \\lim, \\sum, \\vec, " +
+    "subscripts/superscripts), and put units and words that appear inside math in \\text{} with thin spaces " +
+    "(e.g. $9.8\\,\\text{m/s}^2$, $3\\,\\text{N}\\cdot\\text{m}$, chemical formulas like $\\text{H}_2\\text{O}$). " +
+    "Never emit broken or glued commands (e.g. \\cdotp with no space) that would fail to render. " +
     "MATH RIGOR: solve step by step, carry out every algebraic and arithmetic step exactly, and " +
     "VERIFY the result before giving it (e.g. differentiate an antiderivative back to the integrand, " +
     "substitute values to check an identity or equation, sanity-check limits and edge cases). Never " +
@@ -5417,6 +5430,13 @@ async function streamAnswer(aiMsg, aiNode, chat) {
         did2Stage = true;
       }
       if (!did2Stage) requestMessages = [requestMessages[0], { role: "system", content: vSys }, ...requestMessages.slice(1)];
+    } else if (lastUForVision && !codeReq && !fileFmt && refersToPriorImage(lastUForVision.content || "")) {
+      // The user refers to an image we no longer have (e.g. after a reload) → ask them to
+      // re-attach it, instead of the model claiming it can never see images.
+      const note = replyLang === "ar"
+        ? "إن أشار المستخدم إلى صورة أو ملفٍ لا تجده الآن في هذه المحادثة، فاطلب منه بلطفٍ إعادة إرفاق الصورة لتقرأها — ولا تقل أبدًا إنك لا تستطيع رؤية الصور إطلاقًا أو إنك تفتقر لتلك القدرة."
+        : "If the user refers to an image or file you cannot find in this conversation right now, politely ask them to re-attach the image so you can read it — never claim that you can't view images at all or that you lack that capability.";
+      requestMessages = [requestMessages[0], { role: "system", content: note }, ...requestMessages.slice(1)];
     }
     // MAX tier → push maximum reasoning depth: decompose, explore approaches, reason
     // rigorously step-by-step, weigh edge-cases, and self-verify before answering.
@@ -5754,6 +5774,12 @@ async function sendMessage() {
   if (ready.length) {
     userMsg.images = ready.map((p) => p.full.b64);          // RAW base64, no prefix
     userMsg.imageThumbs = ready.map((p) => p.thumb);         // small data-URLs
+    lastImagesByChat.set(chat.id, { images: userMsg.images.slice(), thumbs: userMsg.imageThumbs.slice() });
+  } else if (text && refersToPriorImage(text)) {
+    // Follow-up about the earlier image → silently re-attach it for the request (no thumb,
+    // so it isn't shown again) so the model "goes back to" the image without re-sending.
+    const memo = lastImagesByChat.get(chat.id);
+    if (memo && memo.images && memo.images.length) userMsg.images = memo.images.slice();
   }
   if (readyFiles.length) {
     // fileText = the attached content sent to the model (this request only, like raw

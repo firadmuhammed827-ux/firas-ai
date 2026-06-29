@@ -2366,7 +2366,14 @@ async function handleChat(req, res) {
       if (!served && !res.writableEnded) served = await streamAnthropic(res, messages, ac.signal);
       if (!served && !res.writableEnded) served = await streamOpenRouter(res, messages, ac.signal);
     }
-    const ok = served ? true : await streamOllama(res, ollamaMessages, tier, think, ac.signal, modelOverride);
+    let ok = served ? true : await streamOllama(res, ollamaMessages, tier, think, ac.signal, modelOverride);
+    if (!ok && vision && !res.writableEnded) {
+      // The vision model can fail on a COLD START (it has to load into VRAM first) — the
+      // first request times out/errors, the model loads, and a retry then succeeds. streamOllama
+      // returns false only when it failed BEFORE writing any bytes, so a retry is safe.
+      await new Promise((r) => setTimeout(r, 1200));
+      ok = await streamOllama(res, ollamaMessages, tier, think, ac.signal, modelOverride);
+    }
     if (!ok && !res.writableEnded) {
       if (vision) {
         // Pollinations fallback is text-only; it cannot see images. Tell the

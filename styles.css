@@ -806,9 +806,9 @@ h1, h2, h3 { margin: 0; font-family: var(--font-serif); font-weight: var(--weigh
 /* ----- Message actions --------------------------------------------------- */
 .msg-actions {
   display: flex; flex-wrap: wrap; gap: 2px; margin-block-start: var(--space-3);
-  opacity: 0; transition: opacity var(--dur-fast);
+  opacity: 1;                       /* always visible (copy / regenerate never disappear) */
+  transition: opacity var(--dur-fast);
 }
-.msg-ai:hover .msg-actions, .msg-actions.is-pinned { opacity: 1; }
 .msg-action {
   display: inline-flex; align-items: center; gap: 5px;
   block-size: 32px;
