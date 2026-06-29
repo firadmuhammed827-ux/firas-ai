@@ -791,6 +791,19 @@ async function handleResendCode(req, res) {
   return sendJson(res, 200, { ok: true });
 }
 
+// Periodically drop expired pending signups so DB.pending can't grow unbounded when the verify
+// link is opened on the SAME device (no cross-device poll ever cleans it). They're useless past
+// exp anyway. unref() so this timer never keeps the process alive on shutdown.
+const _pendingSweep = setInterval(async () => {
+  if (!DB.pending) return;
+  const now = Date.now(); let changed = false;
+  for (const k of Object.keys(DB.pending)) {
+    if (now > (DB.pending[k].exp || 0) + 60_000) { delete DB.pending[k]; changed = true; }
+  }
+  if (changed) { try { await persist(); } catch (_) {} }
+}, 5 * 60_000);
+if (_pendingSweep && typeof _pendingSweep.unref === "function") _pendingSweep.unref();
+
 async function handleLogin(req, res) {
   const ip = clientIp(req);
   if (rateLimited("auth:" + ip, 12, 60_000)) {

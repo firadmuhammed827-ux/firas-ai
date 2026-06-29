@@ -1006,7 +1006,7 @@ export default async (request, context) => {
       let b; try { b = await request.json(); } catch { return json({ error: "invalid JSON body" }, 400); }
       const email = String(b.email ?? "").trim().toLowerCase();
       const password = String(b.password ?? "");
-      if (rateLimited("login:" + email, 6, 60000)) return json({ error: "too many attempts, please wait a minute" }, 429);
+      if (rateLimited("login:" + email, 6, 60000) || rateLimited("auth:login:" + ipOf(request, context), 30, 60000)) return json({ error: "too many attempts, please wait a minute" }, 429);
       const user = await getUserByEmail(email);
       // A legacy scrypt account (from the old Node backend) can't be verified with
       // Web Crypto — give a clear message instead of "invalid password".
@@ -1146,7 +1146,12 @@ export default async (request, context) => {
       let b; try { b = await request.json(); } catch { b = {}; }
       const current = String((b && b.current) || "");
       if (user.passHash && !(await verifyPassword(current, user.passHash))) return json({ error: "كلمة المرور غير صحيحة" }, 403);
+      // Purge ALL of the user's data (chat bodies + the chatMeta list index + usage quotas)
+      // so "delete my account" actually erases everything (privacy / data-retention).
       try { await dbDelete("chats/" + user.id); } catch (_) {}
+      try { await dbDelete("chatMeta/" + user.id); } catch (_) {}
+      try { await dbDelete("imgQuota/" + user.id); } catch (_) {}
+      try { await dbDelete("maxQuota/" + user.id); } catch (_) {}
       try { await dbDelete("emailIndex/" + emailKey(user.email)); } catch (_) {}
       try { await dbDelete("users/" + user.id); } catch (_) {}
       context.cookies.delete({ name: COOKIE_NAME, path: "/" });

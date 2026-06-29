@@ -139,6 +139,7 @@ const STR = {
     regenerate: "إعادة التوليد",
     regenUltra: "أعد بـ فِراس أولترا",
     stop: "إيقاف",
+    send: "إرسال",
     copyCode: "نسخ",
     rename: "إعادة تسمية",
     pinned: "المثبّتة",
@@ -301,6 +302,7 @@ const STR = {
     regenerate: "Regenerate",
     regenUltra: "Regenerate with Firas Ultra",
     stop: "Stop",
+    send: "Send",
     copyCode: "Copy",
     rename: "Rename",
     pinned: "Pinned",
@@ -2512,7 +2514,7 @@ function aiTurnEl(msg, index) {
   head.innerHTML =
     `<span class="msg-ai__avatar" aria-hidden="true"><span class="glyph">F</span></span>` +
     `<span class="msg-ai__name">Firas</span>` +
-    `<span class="msg-ai__badge" data-tier="${tier.key}"><span class="dot"></span>${tier.short.en.toUpperCase()}</span>`;
+    `<span class="msg-ai__badge" data-tier="${tier.key}"><span class="dot"></span>${(tier.short[lang] || tier.short.en).toUpperCase()}</span>`;
   turn.appendChild(head);
 
   // Thinking disclosure (Pro/Ultra only, when reasoning exists and was enabled)
@@ -5636,7 +5638,7 @@ function syncStreamingUi() {
     els.live.textContent = t().streaming;
   } else {
     els.sendBtn.classList.remove("is-stop");
-    els.sendBtn.setAttribute("aria-label", "Send");
+    els.sendBtn.setAttribute("aria-label", t().send);
     els.live.textContent = "";
     updateSendState();
   }
@@ -5839,7 +5841,8 @@ async function openAnnouncementsPanel() {
 
   const ov = document.createElement("div");
   ov.className = "mem-overlay ann-overlay";
-  const close = () => { ov.classList.remove("is-open"); setTimeout(() => ov.remove(), 200); };
+  let onKey = null;
+  const close = () => { if (onKey) document.removeEventListener("keydown", onKey); ov.classList.remove("is-open"); setTimeout(() => ov.remove(), 200); };
 
   const adminForm = annIsAdmin ? (
     '<form class="ann-form">' +
@@ -5888,6 +5891,8 @@ async function openAnnouncementsPanel() {
   setTimeout(() => ov.classList.add("is-open"), 20);
   ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
   ov.querySelector(".mem-x").addEventListener("click", close);
+  onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
 
   if (annIsAdmin) {
     let pendingImg = "";
@@ -5930,7 +5935,8 @@ function openSettingsPanel() {
   const u = state.user || {};
   const ov = document.createElement("div");
   ov.className = "mem-overlay settings-overlay";
-  const close = () => { ov.classList.remove("is-open"); setTimeout(() => ov.remove(), 200); };
+  let onKey = null;
+  const close = () => { if (onKey) document.removeEventListener("keydown", onKey); ov.classList.remove("is-open"); setTimeout(() => ov.remove(), 200); };
 
   const tx = ar ? {
     title: "الإعدادات", sub: "إدارة حسابك وأمانه", account: "الحساب",
@@ -5939,6 +5945,7 @@ function openSettingsPanel() {
     dangerH: "منطقة الخطر", dangerP: "حذف الحساب يمسح جميع محادثاتك نهائياً ولا يمكن التراجع عنه.",
     delBtn: "حذف حسابي", delConfirmP: "للتأكيد، أدخل كلمة مرورك ثم اضغط «حذف نهائي».", cancel: "إلغاء", delFinal: "حذف نهائي",
     okEmail: "تم تحديث البريد ✓", okPw: "تم تغيير كلمة المرور ✓", deleted: "تم حذف حسابك", working: "جارٍ…",
+    errPw: "كلمة المرور غير صحيحة", errEmailTaken: "هذا البريد مستخدم بالفعل", errEmailInvalid: "أدخل بريداً صالحاً", errPwShort: "كلمة المرور 8 أحرف على الأقل", errGeneric: "حدث خطأ، حاول مجدداً",
   } : {
     title: "Settings", sub: "Manage your account & security", account: "Account",
     chEmailH: "Change email", newEmail: "New email", curPw: "Current password", saveEmail: "Save email",
@@ -5946,6 +5953,16 @@ function openSettingsPanel() {
     dangerH: "Danger zone", dangerP: "Deleting your account erases all your conversations permanently. This can't be undone.",
     delBtn: "Delete my account", delConfirmP: "To confirm, enter your password then tap “Delete permanently”.", cancel: "Cancel", delFinal: "Delete permanently",
     okEmail: "Email updated ✓", okPw: "Password changed ✓", deleted: "Your account was deleted", working: "Working…",
+    errPw: "Incorrect password", errEmailTaken: "That email is already in use", errEmailInvalid: "Enter a valid email", errPwShort: "Password must be at least 8 characters", errGeneric: "Something went wrong, please try again",
+  };
+  // Server returns Arabic strings; in English mode map by status so the panel stays English.
+  const errMsg = (er, kind) => {
+    if (ar) return (er && er.message) || tx.errGeneric;
+    const s = er && er.status;
+    if (s === 403) return tx.errPw;
+    if (s === 409) return tx.errEmailTaken;
+    if (s === 400) return kind === "email" ? tx.errEmailInvalid : tx.errPwShort;
+    return tx.errGeneric;
   };
   const ICO = {
     mail: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>',
@@ -6015,6 +6032,8 @@ function openSettingsPanel() {
   setTimeout(() => ov.classList.add("is-open"), 20);
   ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
   ov.querySelector(".mem-x").addEventListener("click", close);
+  onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
 
   // — change email —
   const emailForm = ov.querySelector(".set-email-form");
@@ -6030,7 +6049,7 @@ function openSettingsPanel() {
       const d = await apiJson("/api/auth/change-email", { method: "POST", body: JSON.stringify({ email, current }) });
       if (d && d.user) { state.user = Object.assign({}, state.user, d.user); applyUserIdentity(); ov.querySelector(".set-acct-email").textContent = d.user.email || email; }
       emailForm.reset(); showToast(tx.okEmail);
-    } catch (er) { showErr(err, (er && er.message) || "error"); }
+    } catch (er) { showErr(err, errMsg(er, "email")); }
     finally { btn.disabled = false; btn.textContent = lbl; }
   });
 
@@ -6047,7 +6066,7 @@ function openSettingsPanel() {
     try {
       await apiJson("/api/auth/change-password", { method: "POST", body: JSON.stringify({ current, password }) });
       passForm.reset(); showToast(tx.okPw);
-    } catch (er) { showErr(err, (er && er.message) || "error"); }
+    } catch (er) { showErr(err, errMsg(er, "pw")); }
     finally { btn.disabled = false; btn.textContent = lbl; }
   });
 
@@ -6066,7 +6085,7 @@ function openSettingsPanel() {
       try { if (authChannel) authChannel.postMessage({ type: "logout" }); } catch (_) {}
       showToast(tx.deleted);
       setTimeout(() => { try { location.reload(); } catch (_) {} }, 700);
-    } catch (er) { showErr(err, (er && er.message) || "error"); fb.disabled = false; fb.textContent = lbl; }
+    } catch (er) { showErr(err, errMsg(er, "pw")); fb.disabled = false; fb.textContent = lbl; }
   });
 }
 
