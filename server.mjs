@@ -138,12 +138,12 @@ const CF_IMAGE_STEPS = Math.min(20, Math.max(1, parseInt(process.env.CF_IMAGE_ST
 const TIERS = {
   mini:  { model: process.env.OLLAMA_MODEL_MINI  || "gpt-oss:120b-cloud", temperature: 0.5, num_predict: 16384 },
   pro:   { model: process.env.OLLAMA_MODEL_PRO   || "gpt-oss:120b-cloud", temperature: 0.7, num_predict: 131072 },
-  ultra: { model: process.env.OLLAMA_MODEL_ULTRA || "qwen3.5:397b-cloud", temperature: 0.8, num_predict: 65536 },
+  ultra: { model: process.env.OLLAMA_MODEL_ULTRA || "qwen3-coder:480b-cloud", temperature: 0.8, num_predict: 65536 },
   // Max = strongest general/reasoning model (671B), gated by a per-user daily cap.
   // Env-overridable so the model swaps without a redeploy if Ollama's cloud catalog
   // rotates. fallbackModel degrades to a known-good hosted model (gpt-oss) before the
   // last-resort pollinations fallback.
-  max:   { model: process.env.OLLAMA_MODEL_MAX || "qwen3-coder:480b-cloud", temperature: 0.7, num_predict: 32768, fallbackModel: process.env.OLLAMA_MODEL_MAX_FALLBACK || "gpt-oss:120b-cloud", capped: false },
+  max:   { model: process.env.OLLAMA_MODEL_MAX || "qwen3.5:397b-cloud", temperature: 0.7, num_predict: 32768, fallbackModel: process.env.OLLAMA_MODEL_MAX_FALLBACK || "gpt-oss:120b-cloud", capped: false },
 };
 
 // Vision/multimodal model — used automatically when a request carries images.
@@ -2488,7 +2488,10 @@ async function handleChat(req, res) {
         served = await streamDeepSeek(res, messages, ac.signal);   // PRIMARY: DeepSeek V4 Pro (within daily cap)
         if (served) nvidiaCharge();                                // count only successful credit-using calls
       }
-      if (!served && !res.writableEnded) served = await streamGemini(res, messages, ac.signal);   // fallback (cap reached / no key / rate-limit)
+      // After DeepSeek, fall back to Max's own engine (Qwen3.5 397B, free Ollama) BEFORE Gemini —
+      // so Max's reliable engine is the strong free Qwen and it's never weaker than Ultra.
+      if (!served && !res.writableEnded) served = await streamOllama(res, ollamaMessages, tier, think, ac.signal);
+      if (!served && !res.writableEnded) served = await streamGemini(res, messages, ac.signal);   // deeper fallback
       if (!served && !res.writableEnded) served = await streamAnthropic(res, messages, ac.signal);
       if (!served && !res.writableEnded) served = await streamOpenRouter(res, messages, ac.signal);
     }

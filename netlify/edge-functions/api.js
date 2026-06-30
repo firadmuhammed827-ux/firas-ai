@@ -112,12 +112,12 @@ const ANN_IMG_OK = (s) => typeof s === "string" && /^(data:image\/(png|jpe?g|web
 const TIERS = {
   mini:  { model: env("OLLAMA_MODEL_MINI")  || "gpt-oss:120b-cloud",     temperature: 0.5, num_predict: 16384 },
   pro:   { model: env("OLLAMA_MODEL_PRO")   || "gpt-oss:120b-cloud",     temperature: 0.7, num_predict: 131072 },
-  ultra: { model: env("OLLAMA_MODEL_ULTRA") || "qwen3.5:397b-cloud", temperature: 0.8, num_predict: 65536 },
+  ultra: { model: env("OLLAMA_MODEL_ULTRA") || "qwen3-coder:480b-cloud", temperature: 0.8, num_predict: 65536 },
   // Max = strongest general/reasoning model (671B), gated by a per-user daily cap.
   // Env-overridable so the model can be swapped without a redeploy if Ollama's
   // cloud catalog rotates. fallbackModel degrades to a known-good hosted model
   // (gpt-oss) before the last-resort pollinations fallback.
-  max:   { model: env("OLLAMA_MODEL_MAX") || "qwen3-coder:480b-cloud", temperature: 0.7, num_predict: 32768, fallbackModel: env("OLLAMA_MODEL_MAX_FALLBACK") || "gpt-oss:120b-cloud", capped: false },
+  max:   { model: env("OLLAMA_MODEL_MAX") || "qwen3.5:397b-cloud", temperature: 0.7, num_predict: 32768, fallbackModel: env("OLLAMA_MODEL_MAX_FALLBACK") || "gpt-oss:120b-cloud", capped: false },
 };
 // Vision model. The edge ALWAYS talks to Ollama cloud, which does NOT host the
 // local-only qwen2.5vl — so use a CLOUD-hosted multimodal model. gemma3:27b-cloud
@@ -586,7 +586,10 @@ function chatStreamResponse(messages, tier, think, vision) {
             served = await streamDeepSeekInto(enc, messages, ac.signal);   // PRIMARY: DeepSeek V4 Pro (within daily cap)
             if (served && nvDay) { try { dbPut(`nvidiaDay/${nvDay}`, nvN + 1).catch(() => {}); } catch (_) {} }   // count successful calls
           }
-          if (!served && !closed) served = await streamGeminiInto(enc, messages, ac.signal);   // fallback (cap reached / no key / rate-limit)
+          // After DeepSeek, Max's own engine (Qwen3.5 397B, free Ollama) BEFORE Gemini — the reliable
+          // strong free engine, so Max is never weaker than Ultra.
+          if (!served && !closed) served = await streamOllamaInto(enc, ollamaMessages, tier, think, ac.signal);
+          if (!served && !closed) served = await streamGeminiInto(enc, messages, ac.signal);   // deeper fallback
           if (!served && !closed) served = await streamAnthropicInto(enc, messages, ac.signal);
           if (!served && !closed) served = await streamOpenRouterInto(enc, messages, ac.signal);
         }
