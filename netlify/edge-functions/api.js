@@ -112,7 +112,7 @@ const ANN_IMG_OK = (s) => typeof s === "string" && /^(data:image\/(png|jpe?g|web
 const TIERS = {
   mini:  { model: env("OLLAMA_MODEL_MINI")  || "gpt-oss:120b-cloud",     temperature: 0.5, num_predict: 16384 },
   pro:   { model: env("OLLAMA_MODEL_PRO")   || "gpt-oss:120b-cloud",     temperature: 0.7, num_predict: 131072 },
-  ultra: { model: env("OLLAMA_MODEL_ULTRA") || "qwen3-coder:480b-cloud", temperature: 0.8, num_predict: 65536 },
+  ultra: { model: env("OLLAMA_MODEL_ULTRA") || "qwen3.5:397b-cloud", temperature: 0.8, num_predict: 65536 },
   // Max = strongest general/reasoning model (671B), gated by a per-user daily cap.
   // Env-overridable so the model can be swapped without a redeploy if Ollama's
   // cloud catalog rotates. fallbackModel degrades to a known-good hosted model

@@ -133,7 +133,7 @@ const MODELS = {
   ollama: {
     mini:  process.env.OLLAMA_MODEL_MINI  || 'gpt-oss:120b-cloud',
     pro:   process.env.OLLAMA_MODEL_PRO   || 'gpt-oss:120b-cloud',
-    ultra: process.env.OLLAMA_MODEL_ULTRA || 'qwen3-coder:480b-cloud',
+    ultra: process.env.OLLAMA_MODEL_ULTRA || 'qwen3.5:397b-cloud',
   },
   anthropic: {
     mini:  process.env.ANTHROPIC_MODEL_MINI  || 'claude-haiku-4-5',
