@@ -60,6 +60,12 @@ const ANTHROPIC_URL      = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_MAX_TOK  = Math.max(1024, parseInt(process.env.ANTHROPIC_MAX_TOKENS, 10) || 8192);
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 const OPENROUTER_MODEL   = process.env.OPENROUTER_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
+// NVIDIA NIM (build.nvidia.com) — FREE OpenAI-compatible API. Powers the Max tier's PRIMARY engine
+// (DeepSeek V4 Pro, frontier-class reasoning+coding). Key from .env (NVIDIA_API_KEY); when it's
+// unset or rate-limited (free tier ~40 req/min) Max falls back to Gemini automatically.
+const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || "";
+const NVIDIA_OAI_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
+const NVIDIA_MODEL   = process.env.NVIDIA_MODEL || "deepseek-ai/deepseek-v4-pro";
 const OPENROUTER_URL     = "https://openrouter.ai/api/v1/chat/completions";
 // Gemini TEXT for the Max tier — Google AI Studio FREE tier (Flash family is free,
 // ~1500 req/day, no credit card; the stronger Pro tier is paid since Apr 2026). Uses
@@ -1974,6 +1980,66 @@ async function streamGemini(res, messages, signal) {
   if (!msgs.length) return false;
   return _geminiStream(res, msgs, signal, "Max→Gemini");
 }
+// Max-tier PRIMARY engine: DeepSeek V4 Pro via NVIDIA NIM (free, OpenAI-compatible) — frontier-class
+// reasoning + coding, so Max is genuinely the strongest tier. Returns true if it streamed any bytes;
+// false (no key / 401 / 402 / 429 rate-limit / error BEFORE any byte) so the caller falls back to Gemini.
+async function streamDeepSeek(res, messages, signal) {
+  if (!NVIDIA_API_KEY) return false;
+  const msgs = messages
+    .filter((m) => m.role === "system" || m.role === "user" || m.role === "assistant")
+    .map((m) => ({ role: m.role, content: String(m.content || "") }));
+  if (!msgs.length) return false;
+  // Local abort linked to the caller's signal + a 15s "first response" timeout, so if NVIDIA is slow
+  // or unreachable Max bails to Gemini within 15s instead of hanging. (A user Stop still aborts.)
+  const ac = new AbortController();
+  const fwd = () => { try { ac.abort(); } catch (_) {} };
+  if (signal.aborted) ac.abort(); else signal.addEventListener("abort", fwd, { once: true });
+  const cleanup = () => { try { signal.removeEventListener("abort", fwd); } catch (_) {} };
+  const headTimer = setTimeout(() => { try { ac.abort(); } catch (_) {} }, 15000);
+  let upstream;
+  try {
+    upstream = await fetch(NVIDIA_OAI_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + NVIDIA_API_KEY },
+      body: JSON.stringify({
+        model: NVIDIA_MODEL, messages: msgs,
+        temperature: 0.6, top_p: 0.95, max_tokens: 16384,
+        chat_template_kwargs: { thinking: false },
+        stream: true,
+      }),
+      signal: ac.signal,
+    });
+  } catch (e) { clearTimeout(headTimer); cleanup(); return signal.aborted ? true : false; }
+  clearTimeout(headTimer);
+  if (!upstream.ok || !upstream.body) {
+    console.error("[firas] Max→DeepSeek HTTP " + (upstream && upstream.status) + " — falling back to Gemini");
+    try { upstream && upstream.body && upstream.body.cancel(); } catch (_) {}
+    cleanup();
+    return false;
+  }
+  const decoder = new TextDecoder();
+  let buffer = "", any = false;
+  try {
+    for await (const chunk of upstream.body) {
+      if (res.writableEnded) break;
+      buffer += decoder.decode(chunk, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        let line = buffer.slice(0, nl); buffer = buffer.slice(nl + 1);
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let evt; try { evt = JSON.parse(payload); } catch { continue; }
+        const delta = evt.choices && evt.choices[0] && evt.choices[0].delta;
+        if (delta && delta.content) { sseWrite(res, delta.content); any = true; }   // skip reasoning_content
+      }
+    }
+    if (any) { console.log("[firas] served by Max→DeepSeek (" + NVIDIA_MODEL + ")"); cleanup(); return true; }
+  } catch (e) { cleanup(); return signal.aborted ? true : any; }
+  cleanup();
+  return false;
+}
 // VISION: a strong, cloud, multimodal model (works on the deployed site, no local GPU). Sends
 // the attached image(s) as data-URL image_url parts. Tried BEFORE the local Ollama vision model.
 async function streamGeminiVision(res, messages, signal) {
@@ -2412,7 +2478,8 @@ async function handleChat(req, res) {
     // (paid) → OpenRouter free (Nemotron). Each returns false if it failed before any
     // bytes, so the chain degrades cleanly to the next engine.
     if (tier === "max" && !vision && !served) {
-      served = await streamGemini(res, messages, ac.signal);
+      served = await streamDeepSeek(res, messages, ac.signal);   // PRIMARY: DeepSeek V4 Pro (NVIDIA, frontier)
+      if (!served && !res.writableEnded) served = await streamGemini(res, messages, ac.signal);   // fallback (rate-limit/no key)
       if (!served && !res.writableEnded) served = await streamAnthropic(res, messages, ac.signal);
       if (!served && !res.writableEnded) served = await streamOpenRouter(res, messages, ac.signal);
     }
