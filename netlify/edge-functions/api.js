@@ -576,20 +576,9 @@ function chatStreamResponse(messages, tier, think, vision) {
         // Max tier → premium external engines FIRST: Claude Sonnet (paid), then
         // OpenRouter free (DeepSeek-R1) when Claude has no credit/fails.
         if (tier === "max" && !vision && !served) {
-          // Daily-capped DeepSeek (credit guard): use it only while today's global count is under the cap.
-          let nvDay = null, nvN = 0, tryDS = false;
-          if (NVIDIA_API_KEY) {
-            try { nvDay = serverDay(); nvN = (await dbGet(`nvidiaDay/${nvDay}`)) || 0; tryDS = nvN < NVIDIA_DAILY_CAP; }
-            catch (_) { tryDS = true; }   // counter unavailable → don't block DeepSeek
-          }
-          if (tryDS) {
-            served = await streamDeepSeekInto(enc, messages, ac.signal);   // PRIMARY: DeepSeek V4 Pro (within daily cap)
-            if (served && nvDay) { try { dbPut(`nvidiaDay/${nvDay}`, nvN + 1).catch(() => {}); } catch (_) {} }   // count successful calls
-          }
-          // After DeepSeek, Max's own engine (Qwen3.5 397B, free Ollama) BEFORE Gemini — the reliable
-          // strong free engine, so Max is never weaker than Ultra.
-          if (!served && !closed) served = await streamOllamaInto(enc, ollamaMessages, tier, think, ac.signal);
-          if (!served && !closed) served = await streamGeminiInto(enc, messages, ac.signal);   // deeper fallback
+          // Max = Qwen3.5 397B (free Ollama) FIRST — strongest tier, zero credit. External engines fall back.
+          served = await streamOllamaInto(enc, ollamaMessages, tier, think, ac.signal);   // Qwen3.5 397B
+          if (!served && !closed) served = await streamGeminiInto(enc, messages, ac.signal);
           if (!served && !closed) served = await streamAnthropicInto(enc, messages, ac.signal);
           if (!served && !closed) served = await streamOpenRouterInto(enc, messages, ac.signal);
         }

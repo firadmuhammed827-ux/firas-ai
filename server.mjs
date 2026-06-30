@@ -2484,14 +2484,9 @@ async function handleChat(req, res) {
     // (paid) → OpenRouter free (Nemotron). Each returns false if it failed before any
     // bytes, so the chain degrades cleanly to the next engine.
     if (tier === "max" && !vision && !served) {
-      if (NVIDIA_API_KEY && nvidiaUnderCap()) {
-        served = await streamDeepSeek(res, messages, ac.signal);   // PRIMARY: DeepSeek V4 Pro (within daily cap)
-        if (served) nvidiaCharge();                                // count only successful credit-using calls
-      }
-      // After DeepSeek, fall back to Max's own engine (Qwen3.5 397B, free Ollama) BEFORE Gemini —
-      // so Max's reliable engine is the strong free Qwen and it's never weaker than Ultra.
-      if (!served && !res.writableEnded) served = await streamOllama(res, ollamaMessages, tier, think, ac.signal);
-      if (!served && !res.writableEnded) served = await streamGemini(res, messages, ac.signal);   // deeper fallback
+      // Max = Qwen3.5 397B (free Ollama) FIRST — strongest tier, zero credit. External engines fall back.
+      served = await streamOllama(res, ollamaMessages, tier, think, ac.signal);   // Qwen3.5 397B
+      if (!served && !res.writableEnded) served = await streamGemini(res, messages, ac.signal);
       if (!served && !res.writableEnded) served = await streamAnthropic(res, messages, ac.signal);
       if (!served && !res.writableEnded) served = await streamOpenRouter(res, messages, ac.signal);
     }
